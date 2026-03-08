@@ -1869,18 +1869,69 @@ class TTSManager:
 
         return audio_data, 24000
 
-    def generate_voice_convert_chatterbox(self, source_audio_path, target_voice_path, n_cfm_timesteps=None):
+    def _get_voice_changer_chunk_settings(self):
+        chunk_seconds = float(self.user_config.get("voice_changer_chunk_seconds", 12.0) or 12.0)
+        overlap_seconds = float(self.user_config.get("voice_changer_chunk_overlap_seconds", 1.0) or 1.0)
+        if chunk_seconds <= 0:
+            return 0.0, 0.0
+        chunk_seconds = max(1.0, chunk_seconds)
+        overlap_seconds = max(0.0, min(overlap_seconds, chunk_seconds * 0.45))
+        return chunk_seconds, overlap_seconds
+
+    @staticmethod
+    def _append_voice_changer_segment(segments, converted_chunk, overlap_samples):
+        import numpy as np
+
+        converted_chunk = np.asarray(converted_chunk, dtype=np.float32)
+        if converted_chunk.size <= 0:
+            return
+
+        if not segments:
+            segments.append(converted_chunk)
+            return
+
+        previous = segments.pop()
+        overlap_samples = int(max(0, min(overlap_samples, previous.size, converted_chunk.size)))
+        if overlap_samples <= 0:
+            segments.append(previous)
+            segments.append(converted_chunk)
+            return
+
+        fade_in = np.linspace(0.0, 1.0, overlap_samples, dtype=np.float32)
+        fade_out = 1.0 - fade_in
+        merged_overlap = (previous[-overlap_samples:] * fade_out) + (converted_chunk[:overlap_samples] * fade_in)
+
+        head = previous[:-overlap_samples]
+        tail = converted_chunk[overlap_samples:]
+        if head.size > 0:
+            segments.append(head)
+        segments.append(merged_overlap)
+        if tail.size > 0:
+            segments.append(tail)
+
+    def generate_voice_convert_chatterbox(
+        self,
+        source_audio_path,
+        target_voice_path,
+        n_cfm_timesteps=None,
+        progress_callback=None,
+    ):
         """Convert voice in source audio to match target voice.
 
         Args:
             source_audio_path: Path to source audio WAV to convert
             target_voice_path: Path to target voice reference WAV
             n_cfm_timesteps: Optional VC diffusion steps (None = model default)
+            progress_callback: Optional callable invoked as progress_callback(current_chunk, total_chunks)
 
         Returns:
             Tuple: (audio_array, sample_rate)
         """
+        import numpy as np
+        import soundfile as sf
+
         model = self.get_chatterbox_vc()
+        output_sr = int(getattr(model, "sr", 24000) or 24000)
 
         if n_cfm_timesteps is None:
             resolved_steps = None
@@ -1888,16 +1939,95 @@ class TTSManager:
             resolved_steps = int(n_cfm_timesteps)
             resolved_steps = None if resolved_steps <= 0 else max(1, min(30, resolved_steps))
 
-        wav_tensor = model.generate(
-            audio=str(source_audio_path),
-            target_voice_path=str(target_voice_path),
-            n_cfm_timesteps=resolved_steps,
-        )
+        source_path = Path(source_audio_path)
+        chunk_seconds, overlap_seconds = self._get_voice_changer_chunk_settings()
 
-        # Output is [1, N] float tensor at 24kHz
-        audio_data = wav_tensor.squeeze(0).detach().cpu().numpy()
+        if chunk_seconds <= 0 or not source_path.exists():
+            wav_tensor = model.generate(
+                audio=str(source_audio_path),
+                target_voice_path=str(target_voice_path),
+                n_cfm_timesteps=resolved_steps,
+            )
+            audio_data = wav_tensor.squeeze(0).detach().cpu().numpy()
+            return audio_data, output_sr
 
-        return audio_data, 24000
+        try:
+            info = sf.info(str(source_path))
+        except Exception:
+            wav_tensor = model.generate(
+                audio=str(source_audio_path),
+                target_voice_path=str(target_voice_path),
+                n_cfm_timesteps=resolved_steps,
+            )
+            audio_data = wav_tensor.squeeze(0).detach().cpu().numpy()
+            return audio_data, output_sr
+
+        source_sr = int(info.samplerate)
+        total_frames = int(info.frames)
+        if source_sr <= 0 or total_frames <= 0:
+            return np.zeros(0, dtype=np.float32), output_sr
+
+        chunk_frames = max(1, int(round(chunk_seconds * source_sr)))
+        if total_frames <= chunk_frames:
+            if progress_callback:
+                progress_callback(1, 1)
+            wav_tensor = model.generate(
+                audio=str(source_audio_path),
+                target_voice_path=str(target_voice_path),
+                n_cfm_timesteps=resolved_steps,
+            )
+            audio_data = wav_tensor.squeeze(0).detach().cpu().numpy()
+            return audio_data, output_sr
+
+        hop_frames = max(1, int(round((chunk_seconds - overlap_seconds) * source_sr)))
+        starts = list(range(0, total_frames, hop_frames))
+        if not starts:
+            starts = [0]
+
+        model.set_target_voice(str(target_voice_path))
+
+        segments = []
+        previous_start = None
+        previous_frames = None
+
+        with sf.SoundFile(str(source_path), "r") as handle:
+            for chunk_index, start in enumerate(starts, start=1):
+                if start >= total_frames:
+                    break
+                handle.seek(start)
+                frames_to_read = min(chunk_frames, total_frames - start)
+                source_chunk = handle.read(frames=frames_to_read, dtype="float32", always_2d=False)
+                if source_chunk is None or np.asarray(source_chunk).size <= 0:
+                    continue
+                if progress_callback:
+                    progress_callback(chunk_index, len(starts))
+
+                wav_tensor = model.generate_from_waveform(
+                    source_chunk,
+                    source_sr=source_sr,
+                    n_cfm_timesteps=resolved_steps,
+                )
+                converted_chunk = wav_tensor.squeeze(0).detach().cpu().numpy()
+
+                if previous_start is None or previous_frames is None:
+                    overlap_out = 0
+                else:
+                    previous_end = previous_start + previous_frames
+                    overlap_frames = max(0, previous_end - start)
+                    overlap_out = int(round((overlap_frames / source_sr) * output_sr))
+
+                self._append_voice_changer_segment(segments, converted_chunk, overlap_out)
+                previous_start = start
+                previous_frames = int(frames_to_read)
+
+                if start + frames_to_read >= total_frames:
+                    break
+
+        if not segments:
+            return np.zeros(0, dtype=np.float32), output_sr
+
+        audio_data = np.concatenate([seg for seg in segments if seg.size > 0]).astype(np.float32, copy=False)
+        return audio_data, output_sr
 
 
 # Global singleton instance

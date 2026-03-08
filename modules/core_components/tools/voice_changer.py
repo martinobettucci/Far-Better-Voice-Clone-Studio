@@ -259,6 +259,14 @@ class VoiceChangerTool(Tool):
                         source_audio_path=src_temp,
                         target_voice_path=target_wav,
                         n_cfm_timesteps=resolved_steps,
+                        progress_callback=lambda current, total: progress(
+                            0.4 + (0.35 * current / max(total, 1)),
+                            desc=(
+                                "Converting voice..."
+                                if total <= 1
+                                else f"Converting voice... chunk {current}/{total}"
+                            ),
+                        ),
                     )
 
                     progress(0.8, desc="Saving to temp...")
