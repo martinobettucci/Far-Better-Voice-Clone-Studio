@@ -87,7 +87,82 @@ def test_chatterbox_vc_forwards_steps_and_auto_none(monkeypatch):
     )
     assert isinstance(audio, np.ndarray)
     assert sr == 24000
-    assert captured["n_cfm_timesteps"] == 30
+    assert captured["n_cfm_timesteps"] == 100
+
+
+def test_chatterbox_vc_applies_chunk_overrides_without_mutating_user_config(monkeypatch, tmp_path):
+    mgr = TTSManager(
+        user_config={
+            "voice_changer_chunk_seconds": 12.0,
+            "voice_changer_chunk_overlap_seconds": 1.0,
+        }
+    )
+    captured = {}
+
+    class FakeModel:
+        def generate(self, **kwargs):
+            captured.update(kwargs)
+            return torch.zeros((1, 24), dtype=torch.float32)
+
+    monkeypatch.setattr(mgr, "get_chatterbox_vc", lambda: FakeModel())
+
+    src_path = tmp_path / "src.wav"
+    target_path = tmp_path / "target.wav"
+    sf.write(src_path, np.zeros(16_000, dtype=np.float32), 16_000)
+    sf.write(target_path, np.zeros(16_000, dtype=np.float32), 16_000)
+    original_config = dict(mgr.user_config)
+
+    audio, sr = mgr.generate_voice_convert_chatterbox(
+        source_audio_path=src_path,
+        target_voice_path=target_path,
+        n_cfm_timesteps=25,
+        chunk_seconds=6.0,
+        overlap_seconds=1.5,
+    )
+
+    assert isinstance(audio, np.ndarray)
+    assert sr == 24000
+    assert captured["n_cfm_timesteps"] == 25
+    assert mgr.user_config == original_config
+    assert mgr._get_voice_changer_chunk_settings() == (12.0, 1.0)
+    assert mgr._get_voice_changer_chunk_settings(chunk_seconds=6.0, overlap_seconds=1.5) == (6.0, 1.5)
+
+
+def test_chatterbox_vc_short_source_with_chunk_override_stays_single_pass(monkeypatch, tmp_path):
+    mgr = TTSManager(user_config={})
+
+    class FakeModel:
+        sr = 24000
+
+        def __init__(self):
+            self.generate_calls = 0
+
+        def generate(self, **kwargs):
+            self.generate_calls += 1
+            return torch.zeros((1, 24), dtype=torch.float32)
+
+        def generate_from_waveform(self, audio, source_sr, n_cfm_timesteps=None):
+            raise AssertionError("short source should use single-pass generate")
+
+    fake = FakeModel()
+    monkeypatch.setattr(mgr, "get_chatterbox_vc", lambda: fake)
+
+    src_path = tmp_path / "short.wav"
+    target_path = tmp_path / "target.wav"
+    sf.write(src_path, np.zeros(16_000 * 2, dtype=np.float32), 16_000)
+    sf.write(target_path, np.zeros(16_000, dtype=np.float32), 16_000)
+
+    audio, sr = mgr.generate_voice_convert_chatterbox(
+        source_audio_path=src_path,
+        target_voice_path=target_path,
+        n_cfm_timesteps=25,
+        chunk_seconds=6.0,
+        overlap_seconds=1.5,
+    )
+
+    assert isinstance(audio, np.ndarray)
+    assert sr == 24000
+    assert fake.generate_calls == 1
 
 
 def test_chatterbox_vc_chunks_long_sources_and_crossfades(monkeypatch, tmp_path):

@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [
+    "audio-separator",
     "av>=14.0.1",
     "bitsandbytes>=0.49.1",
     "colorlog>=6.10.1",
@@ -125,8 +126,8 @@ fairseq = { git = "https://github.com/One-sixth/fairseq.git" }
 linacodec = { git = "https://github.com/P2Enjoy/LinaCodec.git" }
 qwen-asr = { git = "https://github.com/P2Enjoy/Qwen3-ASR.git" }
 qwen-tts = { git = "https://github.com/P2Enjoy/Qwen3-TTS.git" }
-gradio-filelister = { path = "wheel/gradio_filelister-0.4.0-py3-none-any.whl" }
 zipvoice = { git = "https://github.com/P2Enjoy/LuxTTS.git" }
+gradio-filelister = { path = "wheel/gradio_filelister-0.4.0-py3-none-any.whl" }
 
 [tool.uv]
 index-strategy = "unsafe-best-match"

@@ -4,6 +4,7 @@
 # Core TTS and audio processing dependencies (all platforms)
 numpy==1.26.4
 qwen-tts
+audio-separator
 librosa
 torchaudio
 soundfile

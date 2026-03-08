@@ -208,6 +208,108 @@ def normalize_audio(audio_file, temp_dir):
         return audio_file, "⚠ Error normalizing audio"
 
 
+def remove_silences(audio_file, temp_dir, top_db=40.0, keep_silence_ms=60, min_segment_ms=80):
+    """
+    Remove long silent spans from audio while keeping short pauses between retained regions.
+
+    Args:
+        audio_file: Path to audio file
+        temp_dir: Directory to save processed audio
+        top_db: Silence threshold relative to peak level
+        keep_silence_ms: Short gap to retain between stitched segments
+        min_segment_ms: Ignore tiny non-silent detections shorter than this
+
+    Returns:
+        tuple: Path to processed audio file, or original path if nothing changed and status message
+    """
+    if audio_file is None:
+        return None, "⚠ No audio file provided"
+
+    if not os.path.exists(audio_file):
+        return None, "⚠ Audio file not found"
+
+    try:
+        import librosa
+
+        data, sr = sf.read(audio_file)
+        sample_count = data.shape[0] if getattr(data, "ndim", 0) else 0
+        if sample_count == 0:
+            return audio_file, "No audio samples found"
+
+        guide = data.astype(np.float32, copy=False)
+        if guide.ndim > 1:
+            guide = np.mean(guide, axis=1)
+
+        peak = float(np.max(np.abs(guide))) if guide.size else 0.0
+        if peak <= 1e-6:
+            return audio_file, "No non-silent audio detected"
+
+        intervals = librosa.effects.split(
+            guide,
+            top_db=float(top_db),
+            ref=peak,
+            frame_length=2048,
+            hop_length=512,
+        )
+        if len(intervals) == 0:
+            return audio_file, "No non-silent audio detected"
+
+        keep_padding = max(int(sr * (float(keep_silence_ms) / 1000.0)), 0)
+        min_segment_samples = max(int(sr * (float(min_segment_ms) / 1000.0)), 1)
+        merged_intervals: list[list[int]] = []
+
+        for raw_start, raw_end in intervals.tolist():
+            start = max(int(raw_start) - keep_padding, 0)
+            end = min(int(raw_end) + keep_padding, sample_count)
+            if end - start < min_segment_samples:
+                continue
+            if merged_intervals and start <= merged_intervals[-1][1]:
+                merged_intervals[-1][1] = max(merged_intervals[-1][1], end)
+            else:
+                merged_intervals.append([start, end])
+
+        if not merged_intervals:
+            return audio_file, "No non-silent audio detected"
+        if len(merged_intervals) == 1 and merged_intervals[0] == [0, sample_count]:
+            return audio_file, "No silences removed"
+
+        gap_samples = max(int(sr * (float(keep_silence_ms) / 1000.0)), 0)
+        if data.ndim > 1:
+            gap = np.zeros((gap_samples, data.shape[1]), dtype=data.dtype)
+        else:
+            gap = np.zeros(gap_samples, dtype=data.dtype)
+
+        stitched_parts = []
+        for index, (start, end) in enumerate(merged_intervals):
+            if index > 0 and gap_samples > 0:
+                stitched_parts.append(gap)
+            stitched_parts.append(data[start:end])
+
+        trimmed = np.concatenate(stitched_parts, axis=0)
+        if trimmed.shape[0] >= sample_count:
+            return audio_file, "No silences removed"
+
+        timestamp = datetime.now().strftime('%H%M%S')
+        filename = f"nosilence_{timestamp}.wav"
+        temp_path = Path(temp_dir) / filename
+
+        try:
+            sf.write(str(temp_path), trimmed, sr)
+        except (PermissionError, OSError) as e:
+            print(f"[WARN] Could not write to {temp_path} ({e}). Falling back to system temp.")
+            temp_path = Path(tempfile.gettempdir()) / filename
+            sf.write(str(temp_path), trimmed, sr)
+
+        if platform.system() == "Windows":
+            time.sleep(0.1)
+
+        return str(temp_path), "Removed silences"
+
+    except Exception as e:
+        print(f"Error removing silences: {e}")
+        return audio_file, "⚠ Error removing silences"
+
+
 def convert_to_mono(audio_file, temp_dir):
     """
     Convert stereo audio to mono.

@@ -8,7 +8,10 @@ from .ui_components import (
     INPUT_MODAL_CSS,
     INPUT_MODAL_HEAD,
     INPUT_MODAL_HTML,
-    show_input_modal_js
+    show_input_modal_js,
+    SINGING_WAVEFORM_CSS,
+    SINGING_WAVEFORM_HEAD,
+    SINGING_WAVEFORM_HTML,
 )
 
 from .emotion_manager import (
@@ -48,6 +51,9 @@ __all__ = [
     "INPUT_MODAL_HEAD",
     "INPUT_MODAL_HTML",
     "show_input_modal_js",
+    "SINGING_WAVEFORM_CSS",
+    "SINGING_WAVEFORM_HEAD",
+    "SINGING_WAVEFORM_HTML",
     # Emotion manager
     "CORE_EMOTIONS",
     "load_emotions_from_config",

@@ -18,6 +18,11 @@ from pathlib import Path
 from datetime import datetime
 from modules.core_components.tool_base import Tool, ToolConfig
 from modules.core_components.tools.generated_output_save import convert_audio_file_to_mp3
+from modules.core_components.ui_components.audio_routing import (
+    create_audio_route_controls,
+    wire_audio_route_dropdown_refresh,
+    wire_audio_route_source,
+)
 from gradio_filelister import FileLister
 
 
@@ -36,6 +41,7 @@ class OutputHistoryTool(Tool):
     def create_tool(cls, shared_state):
         """Create Output History tool UI."""
         components = {}
+        initial_audio_route_choices = shared_state.get("audio_route_get_initial_targets", lambda: [])()
 
         with gr.TabItem("Output History") as tab:
             components['tab'] = tab
@@ -70,6 +76,9 @@ class OutputHistoryTool(Tool):
                         label="Download Selected",
                         interactive=False
                     )
+                    route_controls = create_audio_route_controls(initial_audio_route_choices)
+                    components['route_target'] = route_controls['target_dropdown']
+                    components['route_btn'] = route_controls['send_button']
                     components['delete_status'] = gr.Textbox(
                         label="Status",
                         interactive=False,
@@ -249,6 +258,19 @@ class OutputHistoryTool(Tool):
         components['tab'].select(
             refresh_outputs,
             outputs=[components['file_lister']]
+        )
+        wire_audio_route_dropdown_refresh(
+            components['tab'],
+            components['route_target'],
+            shared_state,
+        )
+        wire_audio_route_source(
+            send_button=components['route_btn'],
+            target_dropdown=components['route_target'],
+            audio_value_component=components['history_audio'],
+            status_component=components['delete_status'],
+            shared_state=shared_state,
+            source_label="Output History",
         )
 
         components['convert_output_btn'].click(

@@ -18,10 +18,12 @@ from modules.core_components.library_processing import (
     ProcessingPipelineConfig,
     ProcessingSourceContext,
     WordTimestampLike,
+    build_routed_processing_context,
     clean_transcription_for_engine,
     estimate_pcm16_wav_bytes,
     language_to_code,
     parse_asr_model,
+    resolve_processing_save_destination,
     split_into_segments,
 )
 from modules.core_components.tenant_storage import (
@@ -32,6 +34,7 @@ from modules.core_components.tenant_storage import (
 )
 from modules.core_components.tool_base import Tool, ToolConfig
 from modules.core_components.runtime import MemoryAdmissionError
+from modules.core_components.ui_components.audio_routing import audio_route_parse_payload
 
 
 class LibraryManagerTool(Tool):
@@ -343,6 +346,7 @@ class LibraryManagerTool(Tool):
         play_completion_beep = shared_state.get("play_completion_beep")
         deepfilter_available = bool(shared_state.get("DEEPFILTER_AVAILABLE", False))
         run_heavy_job = shared_state.get("run_heavy_job")
+        audio_route_trigger = shared_state.get("audio_route_trigger")
 
         asr_manager = get_asr_manager()
 
@@ -1330,14 +1334,8 @@ class LibraryManagerTool(Tool):
             sample_stem = Path(selected[0]).stem if selected else ""
             return _clear_sample_cache(sample_stem, request=request), _usage_banner(request)
 
-        def _resolve_save_destination(action_kind: str, source_kind: str) -> str:
-            source_kind = (source_kind or "").lower()
-            if action_kind == "primary":
-                return "sample" if source_kind == "sample" else "dataset"
-            return "dataset" if source_kind == "sample" else "sample"
-
         def _prepare_processing_save_modal_data(action_kind, source_kind, source_dataset_folder, dataset_folder, suggested_name, request: gr.Request):
-            destination = _resolve_save_destination(action_kind, source_kind)
+            destination = resolve_processing_save_destination(action_kind, source_kind)
             if destination == "sample":
                 existing = _list_existing_sample_stems(request)
             else:
@@ -1519,7 +1517,7 @@ class LibraryManagerTool(Tool):
                 if raw_name is None:
                     continue
                 mode = save_mode or "new"
-                destination = _resolve_save_destination(action_kind, proc_source_kind)
+                destination = resolve_processing_save_destination(action_kind, proc_source_kind)
 
                 if destination == "sample":
                     status = _save_sample_from_processing(
@@ -1571,6 +1569,38 @@ class LibraryManagerTool(Tool):
                 )
 
             return no_update
+
+        def _on_audio_route_processing(trigger_value):
+            payload = audio_route_parse_payload(trigger_value)
+            no_update = tuple(gr.update() for _ in range(14))
+            if not payload or payload.get("target_id") != "library_manager.processing":
+                return (*no_update, gr.update())
+
+            audio_path = str(payload.get("audio_path") or "").strip()
+            source_label = payload.get("source_label", "external")
+            if not audio_path:
+                msg = "Incoming audio route was empty."
+                return (*no_update[:-1], msg, msg)
+            if not Path(audio_path).exists():
+                msg = f"Incoming routed audio was not found: {audio_path}"
+                return (*no_update[:-1], msg, msg)
+
+            context = build_routed_processing_context(audio_path)
+            default_name = sanitize_filename(Path(audio_path).stem, keep_extension=False) or "routed_audio"
+            status = (
+                f"Routed audio from {source_label} opened in Processing Studio. "
+                "Pipeline starts from the routed source."
+            )
+            proc_updates = _prepare_processing_context(
+                context=context,
+                transcript="",
+                default_name=default_name,
+                dataset_target="(Select Dataset)",
+                primary_label="Save to Samples (Primary)",
+                secondary_label="Save to Dataset",
+                status=status,
+            )
+            return (*proc_updates, status)
 
         # ----- Initial refresh -----
         components["library_tab"].select(
@@ -1968,6 +1998,29 @@ class LibraryManagerTool(Tool):
                 components["library_usage_md"],
             ],
         )
+
+        if audio_route_trigger is not None:
+            audio_route_trigger.change(
+                _on_audio_route_processing,
+                inputs=[audio_route_trigger],
+                outputs=[
+                    components["library_sections"],
+                    components["proc_audio_editor"],
+                    components["proc_transcript"],
+                    components["lm_default_name"],
+                    components["proc_original_audio_path"],
+                    components["proc_source_kind"],
+                    components["proc_source_dataset_folder_state"],
+                    components["proc_source_type"],
+                    components["proc_source_identifier"],
+                    components["proc_original_file"],
+                    components["proc_save_dataset_folder"],
+                    components["proc_save_primary_btn"],
+                    components["proc_save_secondary_btn"],
+                    components["proc_status"],
+                    components["library_status"],
+                ],
+            )
 
         confirm_trigger.change(
             _on_confirm_action,

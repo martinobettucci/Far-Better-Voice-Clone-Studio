@@ -38,6 +38,11 @@ from modules.core_components.ui_components.prompt_assistant import (
     wire_prompt_assistant_events,
     wire_prompt_apply_listener,
 )
+from modules.core_components.ui_components.audio_routing import (
+    create_audio_route_controls,
+    wire_audio_route_dropdown_refresh,
+    wire_audio_route_source,
+)
 from modules.core_components.runtime import MemoryAdmissionError
 
 
@@ -77,6 +82,7 @@ class VoicePresetsTool(Tool):
         confirm_trigger = shared_state['confirm_trigger']
         input_trigger = shared_state['input_trigger']
         deepfilter_available = bool(shared_state.get("DEEPFILTER_AVAILABLE", False))
+        initial_audio_route_choices = shared_state.get("audio_route_get_initial_targets", lambda: [])()
 
         with gr.TabItem("Voice Presets", id="tab_voice_presets") as voice_presets_tab:
             components['voice_presets_tab'] = voice_presets_tab
@@ -293,6 +299,10 @@ class VoicePresetsTool(Tool):
                             value=False,
                             visible=deepfilter_available,
                         )
+                        components['custom_output_enable_remove_silences'] = gr.Checkbox(
+                            label="Remove Silences",
+                            value=False,
+                        )
                         components['custom_output_enable_normalize'] = gr.Checkbox(
                             label="Enable Normalize",
                             value=False,
@@ -307,6 +317,9 @@ class VoicePresetsTool(Tool):
                             size="sm",
                         )
                     components['custom_save_btn'] = gr.Button("Save to Output", variant="primary", interactive=False)
+                    route_controls = create_audio_route_controls(initial_audio_route_choices)
+                    components['custom_route_target'] = route_controls['target_dropdown']
+                    components['custom_route_btn'] = route_controls['send_button']
                     components['custom_suggested_name'] = gr.State(value="")
                     components['custom_metadata_text'] = gr.State(value="")
                     components['custom_existing_files_json'] = gr.State(value="[]")
@@ -339,6 +352,7 @@ class VoicePresetsTool(Tool):
         user_config = shared_state.get('_user_config', {})
         run_heavy_job = shared_state.get('run_heavy_job')
         normalize_audio = shared_state['normalize_audio']
+        remove_silences = shared_state['remove_silences']
         convert_to_mono = shared_state['convert_to_mono']
         clean_audio = shared_state['clean_audio']
         deepfilter_available = bool(shared_state.get("DEEPFILTER_AVAILABLE", False))
@@ -655,6 +669,20 @@ class VoicePresetsTool(Tool):
                 status_component=components['preset_status'],
             )
 
+        wire_audio_route_dropdown_refresh(
+            components['voice_presets_tab'],
+            components['custom_route_target'],
+            shared_state,
+        )
+        wire_audio_route_source(
+            send_button=components['custom_route_btn'],
+            target_dropdown=components['custom_route_target'],
+            audio_value_component=components['custom_output_audio'],
+            status_component=components['preset_status'],
+            shared_state=shared_state,
+            source_label="Voice Presets",
+        )
+
         # Auto-refresh trained models when tab is selected
         def refresh_trained_model_dropdown(request: gr.Request):
             models = get_trained_models(request=request, strict=True)
@@ -820,9 +848,10 @@ class VoicePresetsTool(Tool):
             queue=False,
         )
 
-        def apply_preset_output_pipeline(audio_value, enable_denoise, enable_normalize, enable_mono, request: gr.Request):
+        def apply_preset_output_pipeline(audio_value, enable_denoise, enable_remove_silences, enable_normalize, enable_mono, request: gr.Request):
             pipeline = OutputAudioPipelineConfig(
                 enable_denoise=bool(enable_denoise),
+                enable_remove_silences=bool(enable_remove_silences),
                 enable_normalize=bool(enable_normalize),
                 enable_mono=bool(enable_mono),
             )
@@ -831,6 +860,7 @@ class VoicePresetsTool(Tool):
                 pipeline,
                 deepfilter_available=deepfilter_available,
                 denoise_step=lambda path: clean_audio(path),
+                remove_silences_step=lambda path: remove_silences(path, request=request),
                 normalize_step=lambda path: normalize_audio(path, request=request),
                 mono_step=lambda path: convert_to_mono(path, request=request),
             )
@@ -843,6 +873,7 @@ class VoicePresetsTool(Tool):
             inputs=[
                 components['custom_output_audio'],
                 components['custom_output_enable_denoise'],
+                components['custom_output_enable_remove_silences'],
                 components['custom_output_enable_normalize'],
                 components['custom_output_enable_mono'],
             ],

@@ -27,6 +27,7 @@ from modules.core_components.tenant_storage import (
 # Import all tool modules here
 from modules.core_components.tools import voice_clone
 from modules.core_components.tools import voice_changer
+from modules.core_components.tools import singing_enhancements
 from modules.core_components.tools import voice_presets
 from modules.core_components.tools import conversation
 from modules.core_components.tools import voice_design
@@ -43,6 +44,10 @@ from modules.core_components import help_page
 ALL_TOOLS = {
     'voice_clone': (voice_clone, voice_clone.VoiceCloneTool.config),
     'voice_changer': (voice_changer, voice_changer.VoiceChangerTool.config),
+    'singing_enhancements': (
+        singing_enhancements,
+        singing_enhancements.SingingEnhancementsTool.config,
+    ),
     'voice_presets': (voice_presets, voice_presets.VoicePresetsTool.config),
     'conversation': (conversation, conversation.ConversationTool.config),
     'voice_design': (voice_design, voice_design.VoiceDesignTool.config),
@@ -347,6 +352,9 @@ SHARED_CSS = """
 #prompt-apply-trigger {
     display: none !important;
 }
+#audio-route-trigger {
+    display: none !important;
+}
 #finetune-files-group > div {
     display: grid !important;
 }
@@ -447,6 +455,7 @@ def load_config():
         "voice_clone_show_expert_params": False,
         "conversation_show_expert_params": False,
         "voice_changer_show_expert_params": False,
+        "voice_changer_profile": "speech",
         "chatterbox_min_p": 0.05,
         "chatterbox_max_new_tokens": 2048,
         "voice_changer_vc_n_cfm_timesteps": 0,
@@ -930,6 +939,7 @@ def build_shared_state(
     confirm_trigger=None,
     input_trigger=None,
     prompt_apply_trigger=None,
+    audio_route_trigger=None,
     main_tabs_component=None,
 ):
     """
@@ -965,6 +975,13 @@ def build_shared_state(
         create_emotion_intensity_slider,
         create_pause_controls
     )
+    from modules.core_components.ui_components.audio_routing import (
+        audio_route_build_payload,
+        audio_route_get_available_targets,
+        audio_route_get_target_label,
+        audio_route_get_target_tab_id,
+        audio_route_get_targets_for_tool_names,
+    )
     from modules.core_components.ai_models.model_utils import (
         get_trained_models as get_trained_models_util,
         get_trained_model_names as get_trained_model_names_util,
@@ -981,6 +998,7 @@ def build_shared_state(
         get_audio_duration as get_audio_duration_util,
         format_time as format_time_util,
         normalize_audio as normalize_audio_util,
+        remove_silences as remove_silences_util,
         convert_to_mono as convert_to_mono_util,
         save_audio_as_sample as save_as_sample_util,
         clean_audio as clean_audio_util,
@@ -1162,6 +1180,7 @@ def build_shared_state(
         'confirm_trigger': confirm_trigger,
         'input_trigger': input_trigger,
         'prompt_apply_trigger': prompt_apply_trigger,
+        'audio_route_trigger': audio_route_trigger,
         'main_tabs_component': main_tabs_component,
         'show_confirmation_modal_js': show_confirmation_modal_js,
         'show_input_modal_js': show_input_modal_js,
@@ -1177,6 +1196,13 @@ def build_shared_state(
         'prompt_get_enabled_target_choices': prompt_hub.get_enabled_target_choices,
         'prompt_build_apply_payload': prompt_hub.build_apply_payload,
         'prompt_parse_apply_payload': prompt_hub.parse_apply_payload,
+        'audio_route_build_payload': audio_route_build_payload,
+        'audio_route_get_available_targets': audio_route_get_available_targets,
+        'audio_route_get_target_label': audio_route_get_target_label,
+        'audio_route_get_target_tab_id': audio_route_get_target_tab_id,
+        'audio_route_get_initial_targets': lambda: audio_route_get_targets_for_tool_names(
+            config.name for _module, config in get_enabled_tools(user_config)
+        ),
 
         # Helper functions
         'get_tenant_paths': lambda request=None, strict=False: resolve_tenant_paths(
@@ -1253,6 +1279,12 @@ def build_shared_state(
         'get_audio_duration': get_audio_duration_util,
         'format_time': format_time_util,
         'normalize_audio': lambda audio, request=None: normalize_audio_util(
+            audio,
+            (get_tenant_path_bundle(request=request, strict=True, config=user_config).temp_dir
+             if get_tenant_path_bundle(request=request, strict=True, config=user_config)
+             else directories.get('TEMP_DIR'))
+        ),
+        'remove_silences': lambda audio, request=None: remove_silences_util(
             audio,
             (get_tenant_path_bundle(request=request, strict=True, config=user_config).temp_dir
              if get_tenant_path_bundle(request=request, strict=True, config=user_config)
@@ -1335,6 +1367,8 @@ def run_tool_standalone(ToolClass, port=7860, title="Tool - Standalone", extra_s
         INPUT_MODAL_CSS,
         INPUT_MODAL_HEAD,
         INPUT_MODAL_HTML,
+        SINGING_WAVEFORM_CSS,
+        SINGING_WAVEFORM_HEAD,
         load_emotions_from_config
     )
     from modules.core_components.constants import (
@@ -1388,6 +1422,7 @@ def run_tool_standalone(ToolClass, port=7860, title="Tool - Standalone", extra_s
         with gr.Row():
             confirm_trigger = gr.Textbox(label="Confirm Trigger", value="", elem_id="confirm-trigger")
             input_trigger = gr.Textbox(label="Input Trigger", value="", elem_id="input-trigger")
+            audio_route_trigger = gr.Textbox(label="Audio Route Trigger", value="", elem_id="audio-route-trigger")
 
         # Build shared_state using centralized helper
         shared_state = build_shared_state(
@@ -1413,7 +1448,8 @@ def run_tool_standalone(ToolClass, port=7860, title="Tool - Standalone", extra_s
                 'DEFAULT_ASR_MODEL': DEFAULT_ASR_MODEL,
             },
             confirm_trigger=confirm_trigger,
-            input_trigger=input_trigger
+            input_trigger=input_trigger,
+            audio_route_trigger=audio_route_trigger,
         )
 
         # Add tool-specific shared_state entries
@@ -1434,8 +1470,8 @@ def run_tool_standalone(ToolClass, port=7860, title="Tool - Standalone", extra_s
     app.queue(default_concurrency_limit=1)
     app.launch(
         theme=theme,
-        css=CONFIRMATION_MODAL_CSS + INPUT_MODAL_CSS + SHARED_CSS,
-        head=CONFIRMATION_MODAL_HEAD + INPUT_MODAL_HEAD,
+        css=CONFIRMATION_MODAL_CSS + INPUT_MODAL_CSS + SINGING_WAVEFORM_CSS + SHARED_CSS,
+        head=CONFIRMATION_MODAL_HEAD + INPUT_MODAL_HEAD + SINGING_WAVEFORM_HEAD,
         server_port=port,
         server_name="127.0.0.1",
         inbrowser=False,

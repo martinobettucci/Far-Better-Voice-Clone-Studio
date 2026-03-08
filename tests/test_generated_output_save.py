@@ -93,7 +93,7 @@ def test_convert_audio_file_to_mp3_missing_ffmpeg(tmp_path: Path, monkeypatch):
     src = tmp_path / "input.wav"
     src.write_bytes(b"wav")
 
-    def fake_run(_cmd, _capture_output, _text):
+    def fake_run(_cmd, capture_output=None, text=None):
         raise FileNotFoundError("ffmpeg")
 
     monkeypatch.setattr("modules.core_components.tools.generated_output_save.subprocess.run", fake_run)
@@ -105,7 +105,7 @@ def test_convert_audio_file_to_mp3_ffmpeg_failure(tmp_path: Path, monkeypatch):
     src = tmp_path / "input.wav"
     src.write_bytes(b"wav")
 
-    def fake_run(_cmd, _capture_output, _text):
+    def fake_run(_cmd, capture_output=None, text=None):
         class Result:
             returncode = 1
             stderr = "encode failed"

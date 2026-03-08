@@ -37,6 +37,8 @@ from modules.core_components import (
     INPUT_MODAL_CSS,
     INPUT_MODAL_HEAD,
     INPUT_MODAL_HTML,
+    SINGING_WAVEFORM_CSS,
+    SINGING_WAVEFORM_HEAD,
     CORE_EMOTIONS,
     show_confirmation_modal_js,
     show_input_modal_js,
@@ -467,6 +469,7 @@ def create_ui():
         confirm_trigger = gr.Textbox(label="Confirm Trigger", value="", elem_id="confirm-trigger")
         input_trigger = gr.Textbox(label="Input Trigger", value="", elem_id="input-trigger")
         prompt_apply_trigger = gr.Textbox(label="Prompt Apply Trigger", value="", elem_id="prompt-apply-trigger")
+        audio_route_trigger = gr.Textbox(label="Audio Route Trigger", value="", elem_id="audio-route-trigger")
 
         # Header with unload button
         with gr.Row():
@@ -521,6 +524,7 @@ def create_ui():
             confirm_trigger=confirm_trigger,
             input_trigger=input_trigger,
             prompt_apply_trigger=prompt_apply_trigger,
+            audio_route_trigger=audio_route_trigger,
         )
 
         # ============================================================
@@ -616,8 +620,14 @@ if __name__ == "__main__":
             share=False,
             inbrowser=not (network_mode or server_host == "0.0.0.0"),
             theme=theme,
-            css=TRIGGER_HIDE_CSS + CONFIRMATION_MODAL_CSS + INPUT_MODAL_CSS + RESOURCE_MONITOR_CSS,
-            head=CONFIRMATION_MODAL_HEAD + INPUT_MODAL_HEAD
+            css=(
+                TRIGGER_HIDE_CSS
+                + CONFIRMATION_MODAL_CSS
+                + INPUT_MODAL_CSS
+                + SINGING_WAVEFORM_CSS
+                + RESOURCE_MONITOR_CSS
+            ),
+            head=CONFIRMATION_MODAL_HEAD + INPUT_MODAL_HEAD + SINGING_WAVEFORM_HEAD
         )
     except OSError:
         print()

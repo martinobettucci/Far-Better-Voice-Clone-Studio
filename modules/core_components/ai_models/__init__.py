@@ -35,6 +35,14 @@ from .foley_manager import (
     get_foley_manager,
 )
 
+from .source_separation_manager import (
+    SourceSeparationManager,
+    SourceSeparationResult,
+    SourceSeparationModel,
+    get_source_separation_manager,
+    synthesize_backing_track,
+)
+
 __all__ = [
     # Utilities
     "get_device",
@@ -62,4 +70,11 @@ __all__ = [
     # Foley / Sound Effects
     "FoleyManager",
     "get_foley_manager",
+
+    # Source Separation
+    "SourceSeparationManager",
+    "SourceSeparationResult",
+    "SourceSeparationModel",
+    "get_source_separation_manager",
+    "synthesize_backing_track",
 ]

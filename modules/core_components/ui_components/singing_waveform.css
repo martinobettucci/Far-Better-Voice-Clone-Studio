@@ -1,0 +1,52 @@
+#singing-waveform-studio {
+    border: 1px solid var(--block-border-color);
+    border-radius: 14px;
+    padding: 0.9rem;
+    background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--background-fill-primary) 94%, transparent),
+        var(--background-fill-secondary)
+    );
+}
+
+#singing-waveform-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.65rem;
+}
+
+#singing-waveform-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+#singing-waveform-clear {
+    border: 1px solid var(--block-border-color);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--body-text-color);
+    padding: 0.35rem 0.8rem;
+    cursor: pointer;
+}
+
+#singing-waveform-clear:hover {
+    background: color-mix(in srgb, var(--background-fill-secondary) 70%, transparent);
+}
+
+#singing-waveform-canvas {
+    width: 100%;
+    height: 180px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--background-fill-secondary) 86%, black 6%);
+    border: 1px solid color-mix(in srgb, var(--block-border-color) 75%, transparent);
+    cursor: crosshair;
+    display: block;
+}
+
+#singing-waveform-status {
+    margin-top: 0.65rem;
+    font-size: 0.84rem;
+    color: var(--body-text-color-subdued);
+}

@@ -31,6 +31,11 @@ from modules.core_components.ui_components.prompt_assistant import (
     wire_prompt_assistant_events,
     wire_prompt_apply_listener,
 )
+from modules.core_components.ui_components.audio_routing import (
+    create_audio_route_controls,
+    wire_audio_route_dropdown_refresh,
+    wire_audio_route_source,
+)
 from modules.core_components.tools.generated_output_save import (
     get_existing_wav_stems,
     parse_modal_submission,
@@ -78,6 +83,7 @@ class VoiceCloneTool(Tool):
         expert_visible = bool(_user_config.get("voice_clone_show_expert_params", False))
         initial_cb_min_p = float(_user_config.get("chatterbox_min_p", 0.05))
         initial_cb_max_new_tokens = int(_user_config.get("chatterbox_max_new_tokens", 2048))
+        initial_audio_route_choices = shared_state.get("audio_route_get_initial_targets", lambda: [])()
 
         # Filter voice clone options based on enabled engines
         engine_settings = _user_config.get("enabled_engines", {})
@@ -301,6 +307,10 @@ class VoiceCloneTool(Tool):
                             value=False,
                             visible=deepfilter_available,
                         )
+                        components['output_enable_remove_silences'] = gr.Checkbox(
+                            label="Remove Silences",
+                            value=False,
+                        )
                         components['output_enable_normalize'] = gr.Checkbox(
                             label="Enable Normalize",
                             value=False,
@@ -315,6 +325,9 @@ class VoiceCloneTool(Tool):
                             size="sm",
                         )
                     components['save_btn'] = gr.Button("Save to Output", variant="primary", interactive=False)
+                    route_controls = create_audio_route_controls(initial_audio_route_choices)
+                    components['route_target'] = route_controls['target_dropdown']
+                    components['route_btn'] = route_controls['send_button']
                     components['suggested_name'] = gr.State(value="")
                     components['metadata_text'] = gr.State(value="")
                     components['output_audio_path'] = gr.State(value="")
@@ -350,6 +363,7 @@ class VoiceCloneTool(Tool):
         run_heavy_job = shared_state.get('run_heavy_job')
         run_heavy_stream_job = shared_state.get('run_heavy_stream_job')
         normalize_audio = shared_state['normalize_audio']
+        remove_silences = shared_state['remove_silences']
         convert_to_mono = shared_state['convert_to_mono']
         clean_audio = shared_state['clean_audio']
         deepfilter_available = bool(shared_state.get("DEEPFILTER_AVAILABLE", False))
@@ -778,6 +792,20 @@ class VoiceCloneTool(Tool):
                 status_component=components['clone_status'],
             )
 
+        wire_audio_route_dropdown_refresh(
+            components['voice_clone_tab'],
+            components['route_target'],
+            shared_state,
+        )
+        wire_audio_route_source(
+            send_button=components['route_btn'],
+            target_dropdown=components['route_target'],
+            audio_value_component=components['output_audio_path'],
+            status_component=components['clone_status'],
+            shared_state=shared_state,
+            source_label="Voice Clone",
+        )
+
         # Double-click = play sample audio
         components['sample_lister'].double_click(
             fn=None,
@@ -924,9 +952,10 @@ class VoiceCloneTool(Tool):
             queue=False,
         )
 
-        def apply_clone_output_pipeline(audio_path, enable_denoise, enable_normalize, enable_mono, request: gr.Request):
+        def apply_clone_output_pipeline(audio_path, enable_denoise, enable_remove_silences, enable_normalize, enable_mono, request: gr.Request):
             pipeline = OutputAudioPipelineConfig(
                 enable_denoise=bool(enable_denoise),
+                enable_remove_silences=bool(enable_remove_silences),
                 enable_normalize=bool(enable_normalize),
                 enable_mono=bool(enable_mono),
             )
@@ -935,6 +964,7 @@ class VoiceCloneTool(Tool):
                 pipeline,
                 deepfilter_available=deepfilter_available,
                 denoise_step=lambda path: clean_audio(path),
+                remove_silences_step=lambda path: remove_silences(path, request=request),
                 normalize_step=lambda path: normalize_audio(path, request=request),
                 mono_step=lambda path: convert_to_mono(path, request=request),
             )
@@ -947,6 +977,7 @@ class VoiceCloneTool(Tool):
             inputs=[
                 components['output_audio_path'],
                 components['output_enable_denoise'],
+                components['output_enable_remove_silences'],
                 components['output_enable_normalize'],
                 components['output_enable_mono'],
             ],

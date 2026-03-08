@@ -1869,9 +1869,17 @@ class TTSManager:
 
         return audio_data, 24000
 
-    def _get_voice_changer_chunk_settings(self):
-        chunk_seconds = float(self.user_config.get("voice_changer_chunk_seconds", 12.0) or 12.0)
-        overlap_seconds = float(self.user_config.get("voice_changer_chunk_overlap_seconds", 1.0) or 1.0)
+    def _get_voice_changer_chunk_settings(self, chunk_seconds=None, overlap_seconds=None):
+        if chunk_seconds is None:
+            chunk_seconds = float(self.user_config.get("voice_changer_chunk_seconds", 12.0) or 12.0)
+        else:
+            chunk_seconds = float(chunk_seconds)
+
+        if overlap_seconds is None:
+            overlap_seconds = float(self.user_config.get("voice_changer_chunk_overlap_seconds", 1.0) or 1.0)
+        else:
+            overlap_seconds = float(overlap_seconds)
+
         if chunk_seconds <= 0:
             return 0.0, 0.0
         chunk_seconds = max(1.0, chunk_seconds)
@@ -1915,6 +1923,8 @@ class TTSManager:
         target_voice_path,
         n_cfm_timesteps=None,
         progress_callback=None,
+        chunk_seconds=None,
+        overlap_seconds=None,
     ):
         """Convert voice in source audio to match target voice.
 
@@ -1923,6 +1933,8 @@ class TTSManager:
             target_voice_path: Path to target voice reference WAV
             n_cfm_timesteps: Optional VC diffusion steps (None = model default)
             progress_callback: Optional callable invoked as progress_callback(current_chunk, total_chunks)
+            chunk_seconds: Optional chunk duration override for this conversion
+            overlap_seconds: Optional chunk overlap override for this conversion
 
         Returns:
             Tuple: (audio_array, sample_rate)
@@ -1937,10 +1949,13 @@ class TTSManager:
             resolved_steps = None
         else:
             resolved_steps = int(n_cfm_timesteps)
-            resolved_steps = None if resolved_steps <= 0 else max(1, min(30, resolved_steps))
+            resolved_steps = None if resolved_steps <= 0 else min(100, max(1, resolved_steps))
 
         source_path = Path(source_audio_path)
-        chunk_seconds, overlap_seconds = self._get_voice_changer_chunk_settings()
+        chunk_seconds, overlap_seconds = self._get_voice_changer_chunk_settings(
+            chunk_seconds=chunk_seconds,
+            overlap_seconds=overlap_seconds,
+        )
 
         if chunk_seconds <= 0 or not source_path.exists():
             wav_tensor = model.generate(

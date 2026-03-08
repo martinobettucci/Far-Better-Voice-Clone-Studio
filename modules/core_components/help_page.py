@@ -89,6 +89,36 @@ def show_voice_changer_help():
     )
 
 
+def show_singing_enhancements_help():
+    return dedent(
+        """
+        ### Singing Enhancements
+
+        Vocal processing studio for sung material with segment selection plus song stem splitting.
+
+        #### Studio
+        1. Upload or record a lead vocal.
+        2. Optionally upload a backing track.
+        3. Drag on the waveform to limit processing to a specific phrase.
+        4. Configure autotune, pitch, filters, compression, echo, and reverb.
+        5. Process the vocal, then preview the processed vocal and final mix.
+        6. Save the vocal-only output and the mixed output independently.
+
+        #### Source Separation
+        1. Upload a mixed song.
+        2. Choose what you want first: **Recommended**, **Vocals + Backing**, **Karaoke / Instrumental**, or **Detailed Stems**.
+        3. Leave the suggested model unless you specifically need a different output layout.
+        4. Click **Split Audio**.
+        5. Preview the extracted vocals and backing track.
+        6. When the model supports it, review detailed stems such as drums, bass, guitar, or piano.
+        7. Use **Use Vocals in Studio** or **Use Backing in Studio** to feed the Studio sub-tab directly.
+        8. Source-separation models auto-download on first use unless **Offline Mode** is enabled.
+        9. For strict offline mode, use **Settings > Model Downloading > Download them all** or **Source Separation - Recommended Defaults**.
+        10. Some 6-stem models can be weaker on guitar/piano separation than on vocals/drums/bass.
+        """
+    )
+
+
 def show_voice_presets_help():
     return dedent(
         """
@@ -206,6 +236,9 @@ def show_settings_help():
 
         - This tab is visible only when app is launched with `--allow-config`.
         - Configure enabled tools, engine toggles, storage paths, tenant header/quota settings, and model downloads.
+        - **Download them all** also includes source-separation models for offline singing workflows.
+        - **Source Separation - Recommended Defaults** downloads a smaller built-in bundle of validated singing/music models.
+        - Source-separation models auto-download on first use while offline mode is disabled.
         """
     )
 
@@ -280,6 +313,7 @@ HELP_TOPICS = [
     "Resource Monitor",
     "Voice Clone",
     "Voice Changer",
+    "Singing Enhancements",
     "Voice Presets",
     "Conversation",
     "Voice Design",
@@ -298,6 +332,7 @@ def get_help_text(topic: str) -> str:
         "Resource Monitor": show_resource_monitor_help,
         "Voice Clone": show_voice_clone_help,
         "Voice Changer": show_voice_changer_help,
+        "Singing Enhancements": show_singing_enhancements_help,
         "Voice Presets": show_voice_presets_help,
         "Conversation": show_conversation_help,
         "Voice Design": show_voice_design_help,

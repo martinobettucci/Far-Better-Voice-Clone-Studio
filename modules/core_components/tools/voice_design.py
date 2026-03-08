@@ -36,6 +36,11 @@ from modules.core_components.ui_components.prompt_assistant import (
     wire_prompt_assistant_events,
     wire_prompt_apply_listener,
 )
+from modules.core_components.ui_components.audio_routing import (
+    create_audio_route_controls,
+    wire_audio_route_dropdown_refresh,
+    wire_audio_route_source,
+)
 
 
 class VoiceDesignTool(Tool):
@@ -59,8 +64,10 @@ class VoiceDesignTool(Tool):
         _user_config = shared_state.get('_user_config', {})
         create_qwen_advanced_params = shared_state.get('create_qwen_advanced_params')
         deepfilter_available = bool(shared_state.get("DEEPFILTER_AVAILABLE", False))
+        initial_audio_route_choices = shared_state.get("audio_route_get_initial_targets", lambda: [])()
 
-        with gr.TabItem("Voice Design", id="tab_voice_design"):
+        with gr.TabItem("Voice Design", id="tab_voice_design") as voice_design_tab:
+            components["voice_design_tab"] = voice_design_tab
             gr.Markdown("Create new voices from natural language descriptions")
 
             with gr.Row():
@@ -125,6 +132,10 @@ class VoiceDesignTool(Tool):
                             value=False,
                             visible=deepfilter_available,
                         )
+                        components['design_output_enable_remove_silences'] = gr.Checkbox(
+                            label="Remove Silences",
+                            value=False,
+                        )
                         components['design_output_enable_normalize'] = gr.Checkbox(
                             label="Enable Normalize",
                             value=False,
@@ -140,6 +151,9 @@ class VoiceDesignTool(Tool):
                         )
 
                     components['design_save_btn'] = gr.Button("Save Sample", variant="primary", interactive=False)
+                    route_controls = create_audio_route_controls(initial_audio_route_choices)
+                    components['design_route_target'] = route_controls['target_dropdown']
+                    components['design_route_btn'] = route_controls['send_button']
                     components['design_existing_files_json'] = gr.State(value="[]")
 
         return components
@@ -158,6 +172,7 @@ class VoiceDesignTool(Tool):
         configure_tts_manager_for_tenant = shared_state.get('configure_tts_manager_for_tenant')
         play_completion_beep = shared_state.get('play_completion_beep')
         normalize_audio = shared_state['normalize_audio']
+        remove_silences = shared_state['remove_silences']
         convert_to_mono = shared_state['convert_to_mono']
         clean_audio = shared_state['clean_audio']
         deepfilter_available = bool(shared_state.get("DEEPFILTER_AVAILABLE", False))
@@ -289,9 +304,10 @@ class VoiceDesignTool(Tool):
             queue=False,
         )
 
-        def apply_design_output_pipeline(audio_value, enable_denoise, enable_normalize, enable_mono, request: gr.Request):
+        def apply_design_output_pipeline(audio_value, enable_denoise, enable_remove_silences, enable_normalize, enable_mono, request: gr.Request):
             pipeline = OutputAudioPipelineConfig(
                 enable_denoise=bool(enable_denoise),
+                enable_remove_silences=bool(enable_remove_silences),
                 enable_normalize=bool(enable_normalize),
                 enable_mono=bool(enable_mono),
             )
@@ -300,6 +316,7 @@ class VoiceDesignTool(Tool):
                 pipeline,
                 deepfilter_available=deepfilter_available,
                 denoise_step=lambda path: clean_audio(path),
+                remove_silences_step=lambda path: remove_silences(path, request=request),
                 normalize_step=lambda path: normalize_audio(path, request=request),
                 mono_step=lambda path: convert_to_mono(path, request=request),
             )
@@ -312,6 +329,7 @@ class VoiceDesignTool(Tool):
             inputs=[
                 components['design_output_audio'],
                 components['design_output_enable_denoise'],
+                components['design_output_enable_remove_silences'],
                 components['design_output_enable_normalize'],
                 components['design_output_enable_mono'],
             ],
@@ -338,6 +356,20 @@ class VoiceDesignTool(Tool):
                 },
                 status_component=components['design_status'],
             )
+
+        wire_audio_route_dropdown_refresh(
+            components['voice_design_tab'],
+            components['design_route_target'],
+            shared_state,
+        )
+        wire_audio_route_source(
+            send_button=components['design_route_btn'],
+            target_dropdown=components['design_route_target'],
+            audio_value_component=components['design_output_audio'],
+            status_component=components['design_status'],
+            shared_state=shared_state,
+            source_label="Voice Design",
+        )
 
         # Save designed voice - show modal
         design_modal_js = show_input_modal_js(

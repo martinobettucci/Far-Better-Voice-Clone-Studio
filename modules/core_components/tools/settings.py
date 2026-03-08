@@ -18,6 +18,8 @@ import gradio as gr
 from pathlib import Path
 
 import modules.core_components.prompt_hub as prompt_hub
+from modules.core_components.ai_models import get_source_separation_manager
+from modules.core_components.ai_models.source_separation_manager import DEFAULT_SOURCE_SEPARATION_MODEL_FILENAMES
 from modules.core_components.tool_base import Tool, ToolConfig
 from modules.core_components.constants import (
     ASR_ENGINES,
@@ -34,6 +36,7 @@ from modules.core_components.constants import (
 TOGGLEABLE_TOOLS = [
     ("Voice Clone", "Voice Clone"),
     ("Voice Changer", "Voice Changer"),
+    ("Singing Enhancements", "Singing Enhancements"),
     ("Voice Presets", "Voice Presets"),
     ("Conversation", "Conversation"),
     ("Voice Design", "Voice Design"),
@@ -62,6 +65,30 @@ class SettingsTool(Tool):
         components = {}
 
         _user_config = shared_state.get("_user_config", {})
+        project_root = Path(__file__).parent.parent.parent.parent
+        configured_models_dir = Path(_user_config.get("models_folder", "models"))
+        if not configured_models_dir.is_absolute():
+            configured_models_dir = project_root / configured_models_dir
+
+        source_separation_manager = get_source_separation_manager(
+            user_config=_user_config,
+            models_dir=configured_models_dir,
+        )
+        try:
+            source_sep_models = source_separation_manager.list_models(refresh=False)
+        except Exception:
+            source_sep_models = []
+        source_sep_download_choices = []
+        source_sep_download_map = {}
+        grouped_source_sep_models = {}
+        for model in source_sep_models:
+            grouped_source_sep_models.setdefault(model.architecture or "Other", []).append(model)
+        for architecture in sorted(grouped_source_sep_models):
+            source_sep_download_choices.append(f"--- Source Separation ({architecture}) ---")
+            for model in grouped_source_sep_models[architecture]:
+                label = f"Source Separation - {model.display_name} [{model.model_filename}]"
+                source_sep_download_choices.append(label)
+                source_sep_download_map[label] = f"source-separation://{model.model_filename}"
 
         with gr.TabItem("⚙️"):
             gr.Markdown("# ⚙️ Settings")
@@ -166,17 +193,28 @@ class SettingsTool(Tool):
                             "LuxTTS",
                             "--- Chatterbox ---",
                             "Chatterbox",
-                            "--- Sound Effects (MMAudio) ---",
-                            "MMAudio - Medium (44kHz)",
-                            "MMAudio - Large v2 (44kHz)",
-                            "--- Sound Effects Dependencies ---",
-                            "MMAudio-CLIP-DFN5B",
-                            "MMAudio-BigVGAN-v2-44k",
+                            "--- Source Separation ---",
+                            "Source Separation - Recommended Defaults",
                         ]
+                        model_download_choices.extend(source_sep_download_choices)
+                        model_download_choices.extend(
+                            [
+                                "--- Sound Effects (MMAudio) ---",
+                                "MMAudio - Medium (44kHz)",
+                                "MMAudio - Large v2 (44kHz)",
+                                "--- Sound Effects Dependencies ---",
+                                "MMAudio-CLIP-DFN5B",
+                                "MMAudio-BigVGAN-v2-44k",
+                            ]
+                        )
 
                         components["model_select"] = gr.Dropdown(
                             label="Select Model to Download to Models Folder",
-                            info="Needed for strict offline mode. Download all required dependencies here.",
+                            info=(
+                                "Needed for strict offline mode. "
+                                "Download all required dependencies here. "
+                                "Source-separation models are listed here too, and 'Download them all' includes them."
+                            ),
                             choices=model_download_choices,
                             value="Qwen3-TTS-12Hz-0.6B-Base",
                         )
@@ -184,12 +222,18 @@ class SettingsTool(Tool):
                         components["download_all_models"] = gr.Checkbox(
                             label="Download them all",
                             value=False,
-                            info="When enabled, the selected model is ignored and all listed models are downloaded.",
+                            info=(
+                                "When enabled, the selected model is ignored and all listed models are downloaded."
+                            ),
                         )
                         components["download_btn"] = gr.Button("Download Model", scale=1)
 
+                        gr.Markdown(
+                            "Source-separation models auto-download on first use unless Offline Mode is enabled."
+                        )
+
                         # Mapping from display names to HuggingFace model IDs
-                        components["MODEL_ID_MAP"] = {
+                        model_id_map = {
                             "Qwen3-TTS-12Hz-0.6B-Base": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
                             "Qwen3-TTS-12Hz-1.7B-Base": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
                             "Qwen3-TTS-12Hz-0.6B-CustomVoice": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
@@ -208,11 +252,14 @@ class SettingsTool(Tool):
                             "Whisper-Large": "whisper://large",
                             "LuxTTS": "YatharthS/LuxTTS",
                             "Chatterbox": "ResembleAI/chatterbox",
+                            "Source Separation - Recommended Defaults": "source-separation://recommended",
                             "MMAudio - Medium (44kHz)": "mmaudio://Medium (44kHz)",
                             "MMAudio - Large v2 (44kHz)": "mmaudio://Large v2 (44kHz)",
                             "MMAudio-CLIP-DFN5B": "apple/DFN5B-CLIP-ViT-H-14-384",
                             "MMAudio-BigVGAN-v2-44k": "nvidia/bigvgan_v2_44khz_128band_512x",
                         }
+                        model_id_map.update(source_sep_download_map)
+                        components["MODEL_ID_MAP"] = model_id_map
 
                 with gr.Row():
                     with gr.Column():
@@ -387,6 +434,13 @@ class SettingsTool(Tool):
         _user_config = shared_state.get("_user_config", {})
         save_preference = shared_state.get("save_preference")
         download_model_from_huggingface = shared_state.get("download_model_from_huggingface")
+        project_root = Path(__file__).parent.parent.parent.parent
+
+        def _get_source_separation_manager():
+            models_dir = Path(_user_config.get("models_folder", "models"))
+            if not models_dir.is_absolute():
+                models_dir = project_root / models_dir
+            return get_source_separation_manager(user_config=_user_config, models_dir=models_dir)
 
         # Lazy import to avoid circular dependency
         from modules.core_components.tools import save_config
@@ -747,11 +801,67 @@ class SettingsTool(Tool):
                 except Exception as e:
                     return False, f"❌ {str(e)}"
 
+            if model_id == "source-separation://recommended":
+                manager = _get_source_separation_manager()
+                try:
+                    models = manager.list_models(refresh=False)
+                except Exception as exc:
+                    return False, f"❌ Failed to load source-separation models: {str(exc)}"
+                default_models = manager.get_default_models(models=models)
+                if not default_models:
+                    filenames = ", ".join(DEFAULT_SOURCE_SEPARATION_MODEL_FILENAMES)
+                    return False, (
+                        "❌ No recommended source-separation models were found in the current catalog.\n"
+                        f"Expected one of: {filenames}"
+                    )
+
+                ok_count, fail_count, lines = _download_source_sep_models(default_models)
+                summary = (
+                    f"Recommended source-separation bundle finished: {ok_count} succeeded, "
+                    f"{fail_count} failed.\n" + "\n".join(lines)
+                )
+                return fail_count == 0, summary
+
+            if model_id.startswith("source-separation://"):
+                model_filename = model_id.split("source-separation://", 1)[1].strip()
+                manager = _get_source_separation_manager()
+                try:
+                    info = manager.download_model(model_filename)
+                    return True, f"✓ Downloaded {info['display_name']} to {info['model_dir']}"
+                except Exception as exc:
+                    return False, f"❌ {str(exc)}"
+
             success, message, _path = download_model_from_huggingface(model_id, progress=None)
             status = f"✓ {message}" if success else f"❌ {message}"
             return success, status
 
-        def download_model_clicked(model_display_name, download_all_models):
+        def _download_source_sep_models(models, *, progress=None):
+            manager = _get_source_separation_manager()
+            lines = []
+            ok_count = 0
+            fail_count = 0
+            total = len(models)
+
+            if total == 0:
+                return ok_count, fail_count, ["Source Separation: no matching models found."]
+
+            for index, model in enumerate(models, start=1):
+                if progress is not None:
+                    progress((index - 1) / total, desc=f"Downloading source-separation model {index}/{total}...")
+                try:
+                    info = manager.download_model(model.model_filename, progress_callback=None)
+                    ok_count += 1
+                    lines.append(f"Source Separation / {model.display_name}: ✓ {info['model_dir']}")
+                except Exception as exc:
+                    fail_count += 1
+                    lines.append(f"Source Separation / {model.display_name}: ❌ {str(exc)}")
+
+            if progress is not None:
+                progress(1.0, desc="Source-separation downloads finished.")
+
+            return ok_count, fail_count, lines
+
+        def download_model_clicked(model_display_name, download_all_models, progress=gr.Progress()):
             if download_all_models:
                 model_names = []
                 for item in components["ALL_MODEL_CHOICES"]:
@@ -759,7 +869,7 @@ class SettingsTool(Tool):
                         name = str(item[0])
                     else:
                         name = str(item)
-                    if name and not name.startswith("---"):
+                    if name and not name.startswith("---") and name != "Source Separation - Recommended Defaults":
                         model_names.append(name)
 
                 lines = []

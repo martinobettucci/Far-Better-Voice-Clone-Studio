@@ -22,6 +22,11 @@ INPUT_MODAL_CSS = (_UI_DIR / 'input_modal.css').read_text(encoding='utf-8')
 INPUT_MODAL_HEAD = '<script>\n' + (_UI_DIR / 'input_modal.js').read_text(encoding='utf-8') + '\n</script>'
 INPUT_MODAL_HTML = (_UI_DIR / 'input_modal.html').read_text(encoding='utf-8')
 
+# Singing waveform selector
+SINGING_WAVEFORM_CSS = (_UI_DIR / 'singing_waveform.css').read_text(encoding='utf-8')
+SINGING_WAVEFORM_HEAD = '<script>\n' + (_UI_DIR / 'singing_waveform.js').read_text(encoding='utf-8') + '\n</script>'
+SINGING_WAVEFORM_HTML = (_UI_DIR / 'singing_waveform.html').read_text(encoding='utf-8')
+
 # Import helper functions
 from .modals import show_confirmation_modal_js, show_input_modal_js, create_confirmation_workflow
 

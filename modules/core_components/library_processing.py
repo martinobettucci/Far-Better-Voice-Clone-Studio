@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 
 
@@ -77,6 +78,28 @@ class ProcessingPipelineConfig:
     enable_denoise: bool = False
     enable_normalize: bool = False
     enable_mono: bool = False
+
+
+def build_routed_processing_context(audio_path: str) -> ProcessingSourceContext:
+    """Build processing context for routed/generated audio."""
+    resolved_path = str(audio_path or "").strip()
+    name = Path(resolved_path).name if resolved_path else "routed_audio.wav"
+    return ProcessingSourceContext(
+        source_type="External",
+        source_identifier=name,
+        original_audio_path=resolved_path,
+        source_dataset_folder="",
+    )
+
+
+def resolve_processing_save_destination(action_kind: str, source_kind: str) -> str:
+    """Resolve whether a processing save action targets samples or datasets."""
+    source_kind = (source_kind or "").lower()
+    if source_kind == "sample":
+        return "sample" if action_kind == "primary" else "dataset"
+    if source_kind == "dataset":
+        return "dataset" if action_kind == "primary" else "sample"
+    return "sample" if action_kind == "primary" else "dataset"
 
 
 def split_into_segments(

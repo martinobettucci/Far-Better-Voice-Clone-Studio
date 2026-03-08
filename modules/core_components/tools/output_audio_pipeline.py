@@ -15,6 +15,7 @@ class OutputAudioPipelineConfig:
     """Manual output pipeline toggles applied in fixed order."""
 
     enable_denoise: bool = False
+    enable_remove_silences: bool = False
     enable_normalize: bool = False
     enable_mono: bool = False
 
@@ -60,10 +61,11 @@ def apply_generation_output_pipeline(
     *,
     deepfilter_available: bool,
     denoise_step: AudioStep,
+    remove_silences_step: AudioStep,
     normalize_step: AudioStep,
     mono_step: AudioStep,
 ) -> tuple[str | None, str]:
-    """Apply output pipeline in fixed order: denoise -> normalize -> mono."""
+    """Apply output pipeline in fixed order: denoise -> remove silences -> normalize -> mono."""
     audio_path = _as_audio_path(audio_value)
     if not audio_path:
         return None, "No generated audio to process."
@@ -71,7 +73,12 @@ def apply_generation_output_pipeline(
     if not Path(audio_path).exists():
         return None, "Generated audio file not found."
 
-    if not (pipeline.enable_denoise or pipeline.enable_normalize or pipeline.enable_mono):
+    if not (
+        pipeline.enable_denoise
+        or pipeline.enable_remove_silences
+        or pipeline.enable_normalize
+        or pipeline.enable_mono
+    ):
         return audio_path, "No pipeline steps enabled. Using current output."
 
     current_audio = audio_path
@@ -84,6 +91,12 @@ def apply_generation_output_pipeline(
         if error:
             return audio_path, error
         applied_steps.append("Denoise")
+
+    if pipeline.enable_remove_silences:
+        current_audio, error = _run_step("Remove silences", remove_silences_step, current_audio)
+        if error:
+            return audio_path, error
+        applied_steps.append("Remove Silences")
 
     if pipeline.enable_normalize:
         current_audio, error = _run_step("Normalize", normalize_step, current_audio)

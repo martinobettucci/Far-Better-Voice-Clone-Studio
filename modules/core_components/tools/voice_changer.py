@@ -18,6 +18,7 @@ if __name__ == "__main__":
 import gradio as gr
 import soundfile as sf
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from textwrap import dedent
@@ -35,7 +36,113 @@ from modules.core_components.tools.output_audio_pipeline import (
 )
 from modules.core_components.tools.live_stream_policy import prefix_non_stream_status
 from modules.core_components.runtime import MemoryAdmissionError
+from modules.core_components.ui_components.audio_routing import (
+    create_audio_route_controls,
+    wire_audio_route_dropdown_refresh,
+    wire_audio_route_source,
+)
 from gradio_filelister import FileLister
+
+
+VOICE_CHANGER_PROFILE_CHOICES = ["Speech", "Singing"]
+VOICE_CHANGER_PROFILE_SPEECH = "speech"
+VOICE_CHANGER_PROFILE_SINGING = "singing"
+MAX_VC_DIFFUSION_STEPS = 100
+SINGING_PROFILE_DEFAULT_STEPS = 25
+SINGING_PROFILE_CHUNK_SECONDS = 6.0
+SINGING_PROFILE_OVERLAP_SECONDS = 1.5
+
+
+@dataclass(frozen=True)
+class VoiceChangerConversionSettings:
+    profile: str
+    effective_steps: int | None
+    chunk_seconds: float | None
+    overlap_seconds: float | None
+    note: str
+    used_profile_defaults: bool
+
+
+def normalize_voice_changer_profile(profile_value) -> str:
+    return (
+        VOICE_CHANGER_PROFILE_SINGING
+        if str(profile_value or "").strip().lower() == VOICE_CHANGER_PROFILE_SINGING
+        else VOICE_CHANGER_PROFILE_SPEECH
+    )
+
+
+def resolve_voice_changer_conversion_settings(profile_value, vc_n_cfm_timesteps) -> VoiceChangerConversionSettings:
+    normalized_profile = normalize_voice_changer_profile(profile_value)
+
+    try:
+        raw_steps = int(vc_n_cfm_timesteps) if vc_n_cfm_timesteps is not None else 0
+    except Exception:
+        raw_steps = 0
+
+    explicit_steps = None if raw_steps <= 0 else min(MAX_VC_DIFFUSION_STEPS, max(1, raw_steps))
+    if normalized_profile == VOICE_CHANGER_PROFILE_SINGING:
+        used_profile_defaults = explicit_steps is None
+        effective_steps = explicit_steps if explicit_steps is not None else SINGING_PROFILE_DEFAULT_STEPS
+        note = (
+            "Singing profile applied default diffusion and chunking tuned for sung input."
+            if used_profile_defaults
+            else "Singing profile kept your expert diffusion override and applied singing chunking."
+        )
+        return VoiceChangerConversionSettings(
+            profile=normalized_profile,
+            effective_steps=effective_steps,
+            chunk_seconds=SINGING_PROFILE_CHUNK_SECONDS,
+            overlap_seconds=SINGING_PROFILE_OVERLAP_SECONDS,
+            note=note,
+            used_profile_defaults=used_profile_defaults,
+        )
+
+    return VoiceChangerConversionSettings(
+        profile=VOICE_CHANGER_PROFILE_SPEECH,
+        effective_steps=explicit_steps,
+        chunk_seconds=None,
+        overlap_seconds=None,
+        note="Speech profile used standard Voice Changer settings.",
+        used_profile_defaults=False,
+    )
+
+
+def build_voice_changer_metadata(
+    *,
+    timestamp: str,
+    target_name: str,
+    settings: VoiceChangerConversionSettings,
+    effective_chunk_seconds: float,
+    effective_overlap_seconds: float,
+) -> str:
+    chunking_summary = (
+        "Disabled"
+        if effective_chunk_seconds <= 0
+        else f"{effective_chunk_seconds:.2f}s chunks / {effective_overlap_seconds:.2f}s overlap"
+    )
+    metadata = dedent(
+        f"""\
+        Generated: {timestamp}
+        Type: Voice Conversion
+        Target Voice: {target_name}
+        Engine: Chatterbox VC
+        Conversion Profile: {settings.profile.title()}
+        VC Diffusion Steps: {settings.effective_steps if settings.effective_steps is not None else "Auto"}
+        Chunking: {chunking_summary}
+        Profile Note: {settings.note}
+        """
+    )
+    return "\n".join(line.lstrip() for line in metadata.lstrip().splitlines())
+
+
+def build_voice_changer_status(target_name: str, settings: VoiceChangerConversionSettings) -> str:
+    if settings.profile == VOICE_CHANGER_PROFILE_SINGING:
+        return prefix_non_stream_status(
+            f"Voice changed to match '{target_name}' using Singing profile. "
+            "Chatterbox VC remains speech-first, so sung inputs are best-effort. "
+            f"{settings.note}"
+        )
+    return prefix_non_stream_status(f"Voice changed to match '{target_name}'.")
 
 
 class VoiceChangerTool(Tool):
@@ -58,7 +165,17 @@ class VoiceChangerTool(Tool):
         _user_config = shared_state.get('_user_config', {})
         deepfilter_available = bool(shared_state.get("DEEPFILTER_AVAILABLE", False))
         expert_visible = bool(_user_config.get("voice_changer_show_expert_params", False))
-        initial_vc_steps = int(_user_config.get("voice_changer_vc_n_cfm_timesteps", 0))
+        initial_profile = normalize_voice_changer_profile(_user_config.get("voice_changer_profile", VOICE_CHANGER_PROFILE_SPEECH))
+        try:
+            raw_initial_vc_steps = int(_user_config.get("voice_changer_vc_n_cfm_timesteps", 0) or 0)
+        except Exception:
+            raw_initial_vc_steps = 0
+        initial_vc_steps = (
+            0
+            if raw_initial_vc_steps <= 0
+            else min(MAX_VC_DIFFUSION_STEPS, int(round(raw_initial_vc_steps / 5.0) * 5))
+        )
+        initial_audio_route_choices = shared_state.get("audio_route_get_initial_targets", lambda: [])()
 
         with gr.TabItem("Voice Changer") as voice_changer_tab:
             components['voice_changer_tab'] = voice_changer_tab
@@ -110,6 +227,15 @@ class VoiceChangerTool(Tool):
                         type="numpy",
                         sources=["upload", "microphone"],
                     )
+                    components['conversion_profile'] = gr.Dropdown(
+                        label="Conversion Profile",
+                        choices=VOICE_CHANGER_PROFILE_CHOICES,
+                        value=initial_profile.title(),
+                        info=(
+                            "Singing is a best-effort preset for sung input. "
+                            "Chatterbox VC remains speech-first, so use a clean WAV target close to the intended register."
+                        ),
+                    )
 
                     with gr.Row():
                         components['convert_btn'] = gr.Button(
@@ -125,11 +251,11 @@ class VoiceChangerTool(Tool):
                     with gr.Accordion("Voice Changer Expert Parameters", open=False, visible=expert_visible) as vc_expert_accordion:
                         components['vc_n_cfm_timesteps'] = gr.Slider(
                             minimum=0,
-                            maximum=30,
+                            maximum=MAX_VC_DIFFUSION_STEPS,
                             value=initial_vc_steps,
-                            step=1,
+                            step=5,
                             label="VC Diffusion Steps (0=Auto)",
-                            info="Higher values can improve quality but are slower",
+                            info="0 uses the model default. Higher values up to 100 can improve quality but are slower.",
                         )
                     components['vc_expert_accordion'] = vc_expert_accordion
 
@@ -143,6 +269,10 @@ class VoiceChangerTool(Tool):
                             label="Enable Denoise",
                             value=False,
                             visible=deepfilter_available,
+                        )
+                        components['output_enable_remove_silences'] = gr.Checkbox(
+                            label="Remove Silences",
+                            value=False,
                         )
                         components['output_enable_normalize'] = gr.Checkbox(
                             label="Enable Normalize",
@@ -162,6 +292,9 @@ class VoiceChangerTool(Tool):
                         components['save_btn'] = gr.Button(
                             "Save to Output", variant="primary", interactive=False
                         )
+                    route_controls = create_audio_route_controls(initial_audio_route_choices)
+                    components['route_target'] = route_controls['target_dropdown']
+                    components['route_btn'] = route_controls['send_button']
 
                     components['convert_status'] = gr.Textbox(
                         label="Status", interactive=False, lines=2, max_lines=5
@@ -190,6 +323,7 @@ class VoiceChangerTool(Tool):
         save_preference = shared_state['save_preference']
         input_trigger = shared_state['input_trigger']
         normalize_audio = shared_state['normalize_audio']
+        remove_silences = shared_state['remove_silences']
         convert_to_mono = shared_state['convert_to_mono']
         clean_audio = shared_state['clean_audio']
         deepfilter_available = bool(shared_state.get("DEEPFILTER_AVAILABLE", False))
@@ -213,7 +347,7 @@ class VoiceChangerTool(Tool):
                 return None, "", ""
             return load_sample_details(sample_name)
 
-        def convert_voice(source_audio, target_lister_value, vc_n_cfm_timesteps, request: gr.Request = None, progress=gr.Progress()):
+        def convert_voice(source_audio, target_lister_value, conversion_profile, vc_n_cfm_timesteps, request: gr.Request = None, progress=gr.Progress()):
             """Run voice conversion."""
             if source_audio is None:
                 return None, gr.update(interactive=False), None, "", "", "Please upload or record source audio."
@@ -239,8 +373,11 @@ class VoiceChangerTool(Tool):
 
             def _convert_impl():
                 progress(0.1, desc="Loading Chatterbox VC model...")
-                resolved_steps = int(vc_n_cfm_timesteps) if vc_n_cfm_timesteps is not None else 0
-                resolved_steps = None if resolved_steps <= 0 else max(1, min(30, resolved_steps))
+                settings = resolve_voice_changer_conversion_settings(conversion_profile, vc_n_cfm_timesteps)
+                effective_chunk_seconds, effective_overlap_seconds = tts_manager._get_voice_changer_chunk_settings(
+                    chunk_seconds=settings.chunk_seconds,
+                    overlap_seconds=settings.overlap_seconds,
+                )
 
                 # Save source numpy audio to a temp WAV (Chatterbox VC expects a file path)
                 import numpy as np
@@ -258,7 +395,7 @@ class VoiceChangerTool(Tool):
                     audio_data, sr = tts_manager.generate_voice_convert_chatterbox(
                         source_audio_path=src_temp,
                         target_voice_path=target_wav,
-                        n_cfm_timesteps=resolved_steps,
+                        n_cfm_timesteps=settings.effective_steps,
                         progress_callback=lambda current, total: progress(
                             0.4 + (0.35 * current / max(total, 1)),
                             desc=(
@@ -267,6 +404,8 @@ class VoiceChangerTool(Tool):
                                 else f"Converting voice... chunk {current}/{total}"
                             ),
                         ),
+                        chunk_seconds=settings.chunk_seconds,
+                        overlap_seconds=settings.overlap_seconds,
                     )
 
                     progress(0.8, desc="Saving to temp...")
@@ -280,14 +419,13 @@ class VoiceChangerTool(Tool):
 
                     suggested = f"vc_{safe_target}"
 
-                    metadata = dedent(f"""\
-                        Generated: {timestamp}
-                        Type: Voice Conversion
-                        Target Voice: {target_name}
-                        Engine: Chatterbox VC
-                        VC Diffusion Steps: {resolved_steps if resolved_steps is not None else "Auto"}
-                        """)
-                    metadata_out = '\n'.join(line.lstrip() for line in metadata.lstrip().splitlines())
+                    metadata_out = build_voice_changer_metadata(
+                        timestamp=timestamp,
+                        target_name=target_name,
+                        settings=settings,
+                        effective_chunk_seconds=effective_chunk_seconds,
+                        effective_overlap_seconds=effective_overlap_seconds,
+                    )
 
                     progress(1.0, desc="Done!")
                     if play_completion_beep:
@@ -299,7 +437,7 @@ class VoiceChangerTool(Tool):
                         temp_path,
                         suggested,
                         metadata_out,
-                        prefix_non_stream_status(f"Voice changed to match '{target_name}'."),
+                        build_voice_changer_status(target_name, settings),
                     )
                 finally:
                     try:
@@ -320,7 +458,12 @@ class VoiceChangerTool(Tool):
 
         convert_event = components['convert_btn'].click(
             convert_voice,
-            inputs=[components['source_audio'], components['target_lister'], components['vc_n_cfm_timesteps']],
+            inputs=[
+                components['source_audio'],
+                components['target_lister'],
+                components['conversion_profile'],
+                components['vc_n_cfm_timesteps'],
+            ],
             outputs=[
                 components['output_audio'],
                 components['save_btn'],
@@ -339,9 +482,10 @@ class VoiceChangerTool(Tool):
             queue=False,
         )
 
-        def apply_voice_changer_output_pipeline(audio_value, enable_denoise, enable_normalize, enable_mono, request: gr.Request):
+        def apply_voice_changer_output_pipeline(audio_value, enable_denoise, enable_remove_silences, enable_normalize, enable_mono, request: gr.Request):
             pipeline = OutputAudioPipelineConfig(
                 enable_denoise=bool(enable_denoise),
+                enable_remove_silences=bool(enable_remove_silences),
                 enable_normalize=bool(enable_normalize),
                 enable_mono=bool(enable_mono),
             )
@@ -350,6 +494,7 @@ class VoiceChangerTool(Tool):
                 pipeline,
                 deepfilter_available=deepfilter_available,
                 denoise_step=lambda path: clean_audio(path),
+                remove_silences_step=lambda path: remove_silences(path, request=request),
                 normalize_step=lambda path: normalize_audio(path, request=request),
                 mono_step=lambda path: convert_to_mono(path, request=request),
             )
@@ -362,6 +507,7 @@ class VoiceChangerTool(Tool):
             inputs=[
                 components['output_audio'],
                 components['output_enable_denoise'],
+                components['output_enable_remove_silences'],
                 components['output_enable_normalize'],
                 components['output_enable_mono'],
             ],
@@ -377,8 +523,20 @@ class VoiceChangerTool(Tool):
             outputs=[components['vc_expert_accordion']],
         )
 
+        components['conversion_profile'].change(
+            lambda value: save_preference(
+                "voice_changer_profile",
+                normalize_voice_changer_profile(value),
+            ),
+            inputs=[components['conversion_profile']],
+            outputs=[],
+        )
+
         components['vc_n_cfm_timesteps'].change(
-            lambda v: save_preference("voice_changer_vc_n_cfm_timesteps", int(v) if v is not None else 0),
+            lambda v: save_preference(
+                "voice_changer_vc_n_cfm_timesteps",
+                0 if v is None or int(v) <= 0 else min(MAX_VC_DIFFUSION_STEPS, int(v)),
+            ),
             inputs=[components['vc_n_cfm_timesteps']],
             outputs=[],
         )
@@ -400,6 +558,19 @@ class VoiceChangerTool(Tool):
         components['voice_changer_tab'].select(
             lambda: get_sample_choices(),
             outputs=[components['target_lister']]
+        )
+        wire_audio_route_dropdown_refresh(
+            components['voice_changer_tab'],
+            components['route_target'],
+            shared_state,
+        )
+        wire_audio_route_source(
+            send_button=components['route_btn'],
+            target_dropdown=components['route_target'],
+            audio_value_component=components['output_audio'],
+            status_component=components['convert_status'],
+            shared_state=shared_state,
+            source_label="Voice Changer",
         )
 
         # Save workflow: button → input modal → copy to output

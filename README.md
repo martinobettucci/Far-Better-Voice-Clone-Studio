@@ -86,6 +86,18 @@ Change the voice in any audio using Chatterbox speech-to-speech voice conversion
 - **English optimized** - Best results with English speech; multilingual support available with the Multilingual model
 - **Multiple models** - TTS (English), Multilingual (23 languages)
 
+### Singing Enhancements
+
+Studio-style post-processing for sung vocals with an optional backing track, plus source separation for full songs:
+
+- **Studio sub-tab** - Process an uploaded lead vocal with waveform segment selection, autotune, pitch/filter/FX, and final vocal/backing mixdown
+- **Source Separation sub-tab** - Split a mixed song into vocals and backing/instrumental stems before sending them into Studio
+- **Detailed stems when supported** - Preview optional drums, bass, other, guitar, and piano outputs for compatible models
+- **Direct handoff** - Push separated vocals or backing straight into the Studio sub-tab
+- **Recommended model bundle** - Includes upstream-default Roformer 2-stem, BS-Roformer 2-stem, karaoke MDX, Demucs 4-stem, and Demucs 6-stem defaults
+- **Offline-ready downloads** - Source-separation models auto-download on first use, and **Download them all** covers them for strict offline mode
+- **Music-friendly workflow** - Keeps a 44.1kHz processing path for vocal FX, stem preview, and final mixdown
+
 ### Voice Presets
 
 Generate with premium pre-built voices with optional style instructions using Qwen3-TTS Custom Model:
@@ -172,6 +184,7 @@ Centralized application configuration:
 - **Model loading** - Attention mechanism, offline mode, low CPU memory usage
 - **Folder paths** - Configurable directories for samples, output, datasets, models
 - **Model downloads** - Download models directly to local storage
+- **Source separation catalog** - Refresh, filter, and pre-download audio-separator models into the configured models folder for offline Singing workflows
 - **Visible Tools** - Enable or disable any tool tab (restart to apply)
 
 Note: the Settings tab is only exposed when launching with `--allow-config`.
