@@ -37,11 +37,13 @@ from modules.core_components.tools.generated_output_save import (
     save_generated_output,
 )
 from modules.core_components.tools.singing_audio_pipeline import (
+    AUTO_KEY_CONFIDENCE_THRESHOLD,
     NOTE_NAMES,
     AutotuneConfig,
     MixConfig,
     SegmentSelection,
     SingingEffectConfig,
+    estimate_key_from_audio,
     process_singing_audio,
 )
 from modules.core_components.ui_components import SINGING_WAVEFORM_HTML
@@ -71,6 +73,12 @@ SOURCE_SEPARATION_GOAL_CHOICES = (
     "All Models",
 )
 SOURCE_SEPARATION_VOCALS_DESTINATIONS = ("Studio", "Voice Changer")
+DETECT_KEY_SOURCE_PRIORITY = (
+    ("Source Separation Original", "sep_source_audio"),
+    ("Source Separation Vocals", "sep_vocals_audio"),
+    ("Source Separation Backing", "sep_backing_audio"),
+    ("Current Lead Vocal", "source_audio"),
+)
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -78,6 +86,104 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _clean_audio_path(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def detect_key_from_available_audio(
+    *,
+    source_audio,
+    sep_source_audio,
+    sep_vocals_audio,
+    sep_backing_audio,
+):
+    candidates = {
+        "source_audio": _clean_audio_path(source_audio),
+        "sep_source_audio": _clean_audio_path(sep_source_audio),
+        "sep_vocals_audio": _clean_audio_path(sep_vocals_audio),
+        "sep_backing_audio": _clean_audio_path(sep_backing_audio),
+    }
+    attempts: list[tuple[str, object]] = []
+    best_label: str | None = None
+    best_estimate = None
+
+    for label, key in DETECT_KEY_SOURCE_PRIORITY:
+        audio_path = candidates.get(key)
+        if not audio_path:
+            continue
+        estimate = estimate_key_from_audio(audio_path, source_label=label.lower().replace(" ", "_"))
+        attempts.append((label, estimate))
+        if best_estimate is None or estimate.confidence > best_estimate.confidence:
+            best_label = label
+            best_estimate = estimate
+        if estimate.confidence >= AUTO_KEY_CONFIDENCE_THRESHOLD and estimate.scale in {"major", "minor"}:
+            return {
+                "mode": "Manual",
+                "tonic": estimate.tonic,
+                "scale": estimate.scale,
+                "status": (
+                    f"Detected {estimate.tonic} {estimate.scale} from {label} "
+                    f"(confidence {estimate.confidence:.3f}). Mode set to Manual."
+                ),
+                "show_manual_controls": True,
+                "used_label": label,
+                "best_estimate": estimate,
+                "attempts": attempts,
+            }
+
+    if best_estimate is None:
+        return {
+            "mode": None,
+            "tonic": None,
+            "scale": None,
+            "status": (
+                "No audio available for key detection. "
+                "Upload a lead vocal or run source separation first."
+            ),
+            "show_manual_controls": False,
+            "used_label": None,
+            "best_estimate": None,
+            "attempts": attempts,
+        }
+
+    if best_estimate.scale not in {"major", "minor"}:
+        return {
+            "mode": None,
+            "tonic": None,
+            "scale": None,
+            "status": (
+                f"Unable to detect a usable key from {best_label}. "
+                "Try a fuller mix or backing track."
+            ),
+            "show_manual_controls": False,
+            "used_label": best_label,
+            "best_estimate": best_estimate,
+            "attempts": attempts,
+        }
+
+    attempt_summary = ", ".join(
+        f"{label}: {estimate.tonic} {estimate.scale} ({estimate.confidence:.3f})"
+        for label, estimate in attempts
+    )
+    return {
+        "mode": "Manual",
+        "tonic": best_estimate.tonic,
+        "scale": best_estimate.scale,
+        "status": (
+            f"Low-confidence detection; filled {best_estimate.tonic} {best_estimate.scale} from {best_label} "
+            f"(confidence {best_estimate.confidence:.3f}). Attempts: {attempt_summary}. "
+            "If tuning sounds wrong, try Chromatic or provide a backing/full-song source."
+        ),
+        "show_manual_controls": True,
+        "used_label": best_label,
+        "best_estimate": best_estimate,
+        "attempts": attempts,
+    }
 
 
 def _build_metadata_text(
@@ -462,6 +568,11 @@ class SingingEnhancementsTool(Tool):
                                         value=True,
                                         scale=1,
                                     )
+                                    components["detect_key_btn"] = gr.Button(
+                                        "Detect Key",
+                                        variant="secondary",
+                                        scale=1,
+                                    )
 
                                 with gr.Row(visible=False) as manual_key_row:
                                     components["autotune_tonic"] = gr.Dropdown(
@@ -755,10 +866,50 @@ class SingingEnhancementsTool(Tool):
             is_manual = (mode or "").strip().lower() == "manual"
             return gr.update(visible=is_manual)
 
+        def detect_key_handler(
+            source_audio,
+            sep_source_audio,
+            sep_vocals_audio,
+            sep_backing_audio,
+        ):
+            result = detect_key_from_available_audio(
+                source_audio=source_audio,
+                sep_source_audio=sep_source_audio,
+                sep_vocals_audio=sep_vocals_audio,
+                sep_backing_audio=sep_backing_audio,
+            )
+            mode_update = gr.update(value=result["mode"]) if result["mode"] else gr.update()
+            tonic_update = gr.update(value=result["tonic"]) if result["tonic"] else gr.update()
+            scale_update = gr.update(value=result["scale"]) if result["scale"] else gr.update()
+            manual_row_update = gr.update(visible=bool(result["show_manual_controls"]))
+            return (
+                mode_update,
+                tonic_update,
+                scale_update,
+                manual_row_update,
+                result["status"],
+            )
+
         components["autotune_mode"].change(
             toggle_manual_controls,
             inputs=[components["autotune_mode"]],
             outputs=[components["manual_key_row"]],
+        )
+        components["detect_key_btn"].click(
+            detect_key_handler,
+            inputs=[
+                components["source_audio"],
+                components["sep_source_audio"],
+                components["sep_vocals_audio"],
+                components["sep_backing_audio"],
+            ],
+            outputs=[
+                components["autotune_mode"],
+                components["autotune_tonic"],
+                components["autotune_scale"],
+                components["manual_key_row"],
+                components["status"],
+            ],
         )
 
         components["singing_tab"].select(
