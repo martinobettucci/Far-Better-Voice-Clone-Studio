@@ -1,9 +1,18 @@
 from modules.core_components.library_processing import (
     WordTimestampLike,
+    build_speaker_separation_import_plan,
+    build_speaker_separation_sample_metadata,
+    build_speaker_separation_sample_name,
     clean_transcription_for_engine,
     language_to_code,
     parse_asr_model,
     split_into_segments,
+)
+from modules.core_components.tenant_storage import (
+    BaseStoragePaths,
+    TenantStorageService,
+    ensure_tenant_dirs,
+    get_tenant_paths,
 )
 
 
@@ -47,3 +56,78 @@ def test_split_into_segments_creates_silence_cut_segments():
     for start, end, text in segments:
         assert end > start
         assert text.strip()
+
+
+def test_speaker_separation_helpers_build_names_and_blank_metadata():
+    name = build_speaker_separation_sample_name("Interview Mix", 2)
+    metadata = build_speaker_separation_sample_metadata(
+        name,
+        source_identifier="sample/interview_mix.wav",
+        expected_speakers=2,
+        speaker_index=2,
+    )
+
+    assert name == "Interview_Mix_speaker_2"
+    assert metadata["Name"] == name
+    assert metadata["Type"] == "Sample"
+    assert metadata["Text"] == ""
+    assert metadata["SpeakerIndex"] == 2
+    assert metadata["ExpectedSpeakers"] == 2
+
+
+def test_speaker_separation_import_plan_is_deterministic_and_estimates_sizes():
+    tracks = [
+        type("Track", (), {"speaker_index": 1, "sample_rate": 16000, "audio_data": [0.0] * 1600})(),
+        type("Track", (), {"speaker_index": 2, "sample_rate": 16000, "audio_data": [0.0] * 800})(),
+    ]
+
+    plans = build_speaker_separation_import_plan(
+        "dialog_take",
+        tracks,
+        source_identifier="dataset/dialog_take.wav",
+        expected_speakers=2,
+    )
+
+    assert [plan.sample_name for plan in plans] == [
+        "dialog_take_speaker_1",
+        "dialog_take_speaker_2",
+    ]
+    assert plans[0].estimated_size_bytes > plans[1].estimated_size_bytes > 0
+    assert plans[0].metadata["Text"] == ""
+
+
+def test_speaker_separation_import_plan_sizes_can_fail_quota_validation(tmp_path):
+    base_paths = BaseStoragePaths(
+        samples_dir=tmp_path / "samples",
+        datasets_dir=tmp_path / "datasets",
+        output_dir=tmp_path / "output",
+        trained_models_dir=tmp_path / "trained",
+        temp_dir=tmp_path / "temp",
+    )
+    paths = get_tenant_paths(base_paths, "tenant-a")
+    ensure_tenant_dirs(paths)
+    tenant_service = TenantStorageService(
+        base_paths=base_paths,
+        tenant_file_limit_mb=1,
+        tenant_media_quota_gb=1,
+    )
+    large_track = type(
+        "Track",
+        (),
+        {"speaker_index": 1, "sample_rate": 16000, "audio_data": [0.0] * 700_000},
+    )()
+    plans = build_speaker_separation_import_plan(
+        "large_dialog",
+        [large_track],
+        source_identifier="sample/large_dialog.wav",
+        expected_speakers=2,
+    )
+
+    ok, message = tenant_service.validate_generated_sizes(
+        paths,
+        [plan.estimated_size_bytes for plan in plans],
+        label="Speaker separation import",
+    )
+
+    assert not ok
+    assert "exceeds per-file limit" in message

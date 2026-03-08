@@ -21,6 +21,11 @@ def test_help_guide_lists_singing_enhancements():
     assert "segment selection" in text.lower()
 
 
+def test_library_manager_help_mentions_speaker_separation():
+    text = help_page.get_help_text("Library Manager")
+    assert "speaker separation" in text.lower()
+
+
 def test_singing_waveform_assets_are_exported():
     assert "Waveform Selection" in ui_components.SINGING_WAVEFORM_HTML
     assert "singing-waveform-canvas" in ui_components.SINGING_WAVEFORM_CSS
@@ -54,3 +59,5 @@ def test_settings_tool_builds_single_model_downloader_with_source_separation_ent
     assert "download_all_models" in components
     assert "source_sep_model_select" not in components
     assert "Source Separation - Recommended Defaults" in components["ALL_MODEL_CHOICES"]
+    assert "SpeechBrain SepFormer - 2 Speakers (16kHz)" in components["ALL_MODEL_CHOICES"]
+    assert "SpeechBrain SepFormer - 3 Speakers (8kHz)" in components["ALL_MODEL_CHOICES"]

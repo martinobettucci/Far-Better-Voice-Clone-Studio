@@ -18,6 +18,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 from textwrap import dedent
+import traceback
 
 import gradio as gr
 
@@ -948,10 +949,19 @@ class SingingEnhancementsTool(Tool):
                     status_message="Select a source-separation model first.",
                 )
             else:
+                print(
+                    "[Source Separation UI] Request received: "
+                    f"source_audio={source_audio} model={model_filename} use_autocast={bool(use_autocast)}",
+                    flush=True,
+                )
                 try:
                     tenant_paths = get_tenant_paths(request=request, strict=True)
                     temp_dir = tenant_paths.temp_dir / "source_separation" / datetime.now().strftime("%Y%m%d_%H%M%S")
                     temp_dir.mkdir(parents=True, exist_ok=True)
+                    print(
+                        f"[Source Separation UI] Working directory: {temp_dir}",
+                        flush=True,
+                    )
 
                     def _separate_impl():
                         result = source_separation_manager.separate_audio(
@@ -979,11 +989,19 @@ class SingingEnhancementsTool(Tool):
                     else:
                         payload = _separate_impl()
                 except MemoryAdmissionError as exc:
+                    print(
+                        f"[Source Separation UI] Memory admission rejected: {exc}",
+                        flush=True,
+                    )
                     payload = build_source_separation_ui_payload(
                         None,
                         status_message=f"⚠ Memory safety guard rejected request: {str(exc)}",
                     )
                 except Exception as exc:
+                    print(
+                        f"[Source Separation UI] Separation failed: {exc}\n{traceback.format_exc()}",
+                        flush=True,
+                    )
                     payload = build_source_separation_ui_payload(
                         None,
                         status_message=f"❌ Source separation failed: {str(exc)}",

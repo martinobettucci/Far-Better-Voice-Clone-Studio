@@ -19,7 +19,7 @@ def show_library_manager_help():
         #### Layout
         - **Samples**: sample upload, preview, transcript autosave, cache clearing, deletion.
         - **Datasets**: dataset folder CRUD, bulk upload, per-file transcript autosave, batch transcribe, auto-split selected file.
-        - **Processing Studio**: opened from Samples/Datasets only, deterministic pipeline, transcribe, context-first save.
+        - **Processing Studio**: opened from Samples/Datasets only, deterministic pipeline, speaker separation, transcribe, context-first save.
 
         #### Samples flow
         1. Open **Samples**.
@@ -40,9 +40,11 @@ def show_library_manager_help():
         1. Open source via **Process** from Samples or Datasets.
         2. Configure pipeline checkboxes (**Denoise**, **Normalize**, **Mono**) and click **Apply Pipeline**.
         3. Pipeline always recomputes from the original source file.
-        4. Run **Transcribe** with Qwen3 ASR, Whisper, or VibeVoice ASR.
-        5. Save with context-first primary destination (plus explicit cross-save), choosing **Save as new** or **Replace existing**.
-        6. Processing transcript is written only when you save output.
+        4. Optionally run **Separate Speakers** on the current editor audio to auto-import speaker tracks into **Samples**.
+        5. Choose **Expected Speakers = 2** for the higher-fidelity 16 kHz model, or **3** for the lower-fidelity 8 kHz model.
+        6. Run **Transcribe** with Qwen3 ASR, Whisper, or VibeVoice ASR.
+        7. Save with context-first primary destination (plus explicit cross-save), choosing **Save as new** or **Replace existing**.
+        8. Processing transcript is written only when you save output.
 
         #### Quotas and tenant isolation
         - Tenant usage meter is shown at the top.
@@ -236,9 +238,10 @@ def show_settings_help():
 
         - This tab is visible only when app is launched with `--allow-config`.
         - Configure enabled tools, engine toggles, storage paths, tenant header/quota settings, and model downloads.
-        - **Download them all** also includes source-separation models for offline singing workflows.
+        - **Download them all** also includes source-separation and speaker-separation models for offline workflows.
         - **Source Separation - Recommended Defaults** downloads a smaller built-in bundle of validated singing/music models.
-        - Source-separation models auto-download on first use while offline mode is disabled.
+        - Speech speaker-separation models are listed as **SpeechBrain SepFormer - 2 Speakers (16kHz)** and **SpeechBrain SepFormer - 3 Speakers (8kHz)**.
+        - Source-separation and speaker-separation models auto-download on first use while offline mode is disabled.
         """
     )
 

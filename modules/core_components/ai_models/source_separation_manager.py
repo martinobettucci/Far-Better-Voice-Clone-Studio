@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -277,6 +278,19 @@ def _timestamp_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _log_source_separation(message: str):
+    print(f"[Source Separation] {message}", flush=True)
+
+
+def _clip_console_output(text: str, max_chars: int = 4000) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= max_chars:
+        return raw
+    return raw[-max_chars:]
+
+
 def synthesize_backing_track(stem_paths: dict[str, str], output_path: Path) -> str:
     """Build a backing track by summing all detailed non-vocal stems."""
     backing_stems = [Path(stem_paths[stem]) for stem in DETAILED_STEMS if stem in stem_paths]
@@ -350,8 +364,13 @@ class SourceSeparationManager:
             "Install dependencies for Voice Clone Studio and retry."
         )
 
-    def _run_cli(self, args: list[str], *, timeout_s: int = 900) -> str:
+    def _run_cli(self, args: list[str], *, timeout_s: int = 900, cwd: str | Path | None = None) -> str:
         command = [self._audio_separator_executable(), *args]
+        cwd_path = Path(cwd) if cwd is not None else None
+        if cwd_path is not None:
+            _log_source_separation(f"Running CLI in {cwd_path}: {shlex.join(command)}")
+        else:
+            _log_source_separation(f"Running CLI: {shlex.join(command)}")
         try:
             result = subprocess.run(
                 command,
@@ -359,22 +378,77 @@ class SourceSeparationManager:
                 text=True,
                 timeout=timeout_s,
                 check=False,
+                cwd=str(cwd_path) if cwd_path is not None else None,
             )
         except FileNotFoundError as exc:
+            _log_source_separation("audio-separator executable was not found.")
             raise RuntimeError(
                 "audio-separator executable was not found. Install the package first."
             ) from exc
         except subprocess.TimeoutExpired as exc:
+            _log_source_separation(f"audio-separator timed out after {timeout_s} seconds.")
             raise RuntimeError(f"audio-separator timed out after {timeout_s} seconds.") from exc
 
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
             stdout = (result.stdout or "").strip()
+            _log_source_separation(f"CLI failed with exit code {result.returncode}.")
+            if stdout:
+                _log_source_separation(f"stdout:\n{_clip_console_output(stdout)}")
+            if stderr:
+                _log_source_separation(f"stderr:\n{_clip_console_output(stderr)}")
             detail = stderr or stdout or "No error details were returned."
             detail_line = detail.splitlines()[-1]
             raise RuntimeError(f"audio-separator failed: {detail_line}")
 
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+        if stderr.strip():
+            _log_source_separation(f"CLI stderr (non-fatal):\n{_clip_console_output(stderr)}")
+        if stdout.strip() and "-l" not in args:
+            _log_source_separation(f"CLI stdout:\n{_clip_console_output(stdout)}")
         return result.stdout or ""
+
+    def _collect_separated_stem_paths(
+        self,
+        *,
+        target_dir: Path,
+        custom_output_names: dict[str, str],
+    ) -> dict[str, str]:
+        raw_stem_paths: dict[str, str] = {}
+        search_roots: list[Path] = [target_dir]
+        cwd_root = Path.cwd()
+        if cwd_root != target_dir:
+            search_roots.append(cwd_root)
+
+        for stem, custom_name in custom_output_names.items():
+            filename = f"{custom_name}.wav"
+            located_path: Path | None = None
+
+            for root in search_roots:
+                exact_candidate = root / filename
+                if exact_candidate.exists():
+                    located_path = exact_candidate
+                    break
+
+                recursive_matches = list(root.rglob(filename))
+                if recursive_matches:
+                    located_path = recursive_matches[0]
+                    break
+
+            if located_path is None:
+                continue
+
+            final_path = target_dir / filename
+            if located_path.resolve() != final_path.resolve():
+                target_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(located_path), str(final_path))
+                _log_source_separation(
+                    f"Moved {filename} from {located_path.parent} to {target_dir}"
+                )
+            raw_stem_paths[stem] = str(final_path)
+
+        return raw_stem_paths
 
     def _read_catalog_cache(self) -> list[SourceSeparationModel]:
         data = _safe_json_load(self.catalog_cache_path, {})
@@ -530,6 +604,9 @@ class SourceSeparationManager:
     def refresh_catalog(self, *, strict: bool = False) -> list[SourceSeparationModel]:
         cached_models = self._read_catalog_cache()
         builtin_models = self._builtin_models()
+        _log_source_separation(
+            f"Refreshing model catalog (strict={strict}, builtin={len(builtin_models)}, cached={len(cached_models)})"
+        )
         try:
             payload = json.loads(self._run_cli(["-l", "--list_format=json"], timeout_s=180))
             models = self._normalize_catalog_payload(payload)
@@ -537,10 +614,15 @@ class SourceSeparationManager:
             if not merged_models:
                 raise RuntimeError("audio-separator returned an empty music separation catalog.")
             self._write_catalog_cache(merged_models)
+            _log_source_separation(f"Catalog ready with {len(merged_models)} models.")
             return merged_models
-        except Exception:
+        except Exception as exc:
+            _log_source_separation(f"Catalog refresh failed: {exc}")
             merged_models = self._merge_model_lists(builtin_models, cached_models)
             if merged_models:
+                _log_source_separation(
+                    f"Using builtin/cached fallback catalog with {len(merged_models)} models."
+                )
                 return merged_models
             if cached_models and not strict:
                 return cached_models
@@ -697,16 +779,25 @@ class SourceSeparationManager:
         model_dir = self.get_model_dir(model.model_filename)
         files = self._scan_model_files(model_dir)
         if files:
+            _log_source_separation(
+                f"Using local model files for {model.display_name} from {model_dir}"
+            )
             self._record_local_model_files(model, files)
             return model_dir
 
         if self._is_offline_mode():
+            _log_source_separation(
+                f"Offline mode blocked missing model {model.model_filename} in {model_dir}"
+            )
             raise RuntimeError(
                 "Offline mode enabled and source-separation model is missing locally: "
                 f"{model.model_filename}\n"
                 "Use Settings > Model Downloading > Download them all, or disable Offline Mode."
             )
 
+        _log_source_separation(
+            f"Model {model.display_name} is missing locally. Starting download into {model_dir}"
+        )
         self.download_model(model.model_filename, progress_callback=progress_callback)
         files = self._scan_model_files(model_dir)
         if not files:
@@ -723,6 +814,9 @@ class SourceSeparationManager:
         self._ensure_dirs()
         model_dir = self.get_model_dir(model.model_filename)
         model_dir.mkdir(parents=True, exist_ok=True)
+        _log_source_separation(
+            f"Downloading model {model.display_name} ({model.model_filename}) into {model_dir}"
+        )
 
         if progress_callback:
             progress_callback(0.1, desc=f"Downloading {model.display_name}...")
@@ -745,6 +839,9 @@ class SourceSeparationManager:
             )
 
         self._record_local_model_files(model, files)
+        _log_source_separation(
+            f"Model download completed for {model.display_name}; files={len(files)}"
+        )
 
         if progress_callback:
             progress_callback(1.0, desc=f"{model.display_name} ready.")
@@ -794,6 +891,12 @@ class SourceSeparationManager:
         if not input_audio.exists():
             raise FileNotFoundError(f"Input audio not found: {input_audio}")
 
+        _log_source_separation(
+            f"Starting separation: input={input_audio} model={model.display_name} ({model.model_filename}) "
+            f"use_autocast={bool(use_autocast)} normalization={float(normalization):.4f} "
+            f"invert_spect={bool(invert_spect)} output_dir={output_dir}"
+        )
+
         model_dir = self.ensure_model_available(model.model_filename, progress_callback=progress_callback)
 
         target_dir = Path(str(output_dir))
@@ -830,15 +933,17 @@ class SourceSeparationManager:
         if use_autocast:
             args.append("--use_autocast")
 
-        self._run_cli(args, timeout_s=7200)
+        self._run_cli(args, timeout_s=7200, cwd=target_dir)
 
-        raw_stem_paths: dict[str, str] = {}
-        for stem, custom_name in custom_output_names.items():
-            candidate = target_dir / f"{custom_name}.wav"
-            if candidate.exists():
-                raw_stem_paths[stem] = str(candidate)
+        raw_stem_paths = self._collect_separated_stem_paths(
+            target_dir=target_dir,
+            custom_output_names=custom_output_names,
+        )
 
         if "Vocals" not in raw_stem_paths:
+            _log_source_separation(
+                f"Separation produced no vocals stem. Raw stems found: {sorted(raw_stem_paths.keys())}"
+            )
             raise RuntimeError(
                 f"Source separation completed but no vocals stem was produced for {input_audio.name}"
             )
@@ -903,6 +1008,11 @@ class SourceSeparationManager:
 
         if progress_callback:
             progress_callback(1.0, desc="Source separation complete.")
+
+        _log_source_separation(
+            f"Separation completed for {input_audio.name}; outputs={sorted(stem_paths.keys())} "
+            f"backing_synthesized={backing_is_synthesized}"
+        )
 
         return SourceSeparationResult(
             model=model,

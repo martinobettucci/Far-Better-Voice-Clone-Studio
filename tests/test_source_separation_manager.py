@@ -168,6 +168,32 @@ def test_synthesize_backing_track_aligns_length_and_channels(tmp_path: Path):
     assert mixed.shape[1] == 2
 
 
+def test_source_separation_collects_outputs_even_if_backend_writes_to_cwd(tmp_path: Path, monkeypatch):
+    manager = SourceSeparationManager(user_config={}, models_dir=tmp_path)
+    target_dir = tmp_path / "target"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stray_dir = tmp_path / "cwd"
+    stray_dir.mkdir(parents=True, exist_ok=True)
+
+    vocals_path = _write_wav(stray_dir / "song__vocals.wav", np.zeros(256, dtype=np.float32))
+    backing_path = _write_wav(stray_dir / "song__instrumental.wav", np.zeros(256, dtype=np.float32))
+
+    monkeypatch.chdir(stray_dir)
+
+    collected = manager._collect_separated_stem_paths(
+        target_dir=target_dir,
+        custom_output_names={
+            "Vocals": "song__vocals",
+            "Instrumental": "song__instrumental",
+        },
+    )
+
+    assert collected["Vocals"] == str(target_dir / vocals_path.name)
+    assert collected["Instrumental"] == str(target_dir / backing_path.name)
+    assert (target_dir / vocals_path.name).exists()
+    assert (target_dir / backing_path.name).exists()
+
+
 def test_source_separation_save_bundle_and_ui_helpers(tmp_path: Path):
     vocals_path = _write_wav(tmp_path / "vocals.wav", np.zeros(1_000, dtype=np.float32))
     backing_path = _write_wav(tmp_path / "backing.wav", np.zeros((1_000, 2), dtype=np.float32))

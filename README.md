@@ -144,7 +144,7 @@ Tenant-scoped browser workflow for remote users (single source of truth for samp
 
 - **Samples subtab** - Upload audio/video, preview, transcript edit/save, delete, clear cache, open in Processing Studio
 - **Datasets subtab** - Dataset folder create/delete, file browse, bulk upload, transcript edit/save, delete, batch transcribe, open in Processing Studio
-- **Processing Studio subtab** - Load source (upload/sample/dataset), trim/edit, denoise/normalize/mono, single-file ASR, save to Samples or Dataset, auto-split long audio to dataset clips
+- **Processing Studio subtab** - Load source (upload/sample/dataset), trim/edit, denoise/normalize/mono, single-file ASR, speaker separation with auto-import to Samples, save to Samples or Dataset, auto-split long audio to dataset clips
 - **Video ingestion** - Video files are accepted and converted to audio for sample/dataset workflows
 - **Quota Visibility** - Tenant usage meter (samples + datasets) shown in tab header
 - **Isolation** - Tenant header required (default `X-Tenant-Id`) unless a valid `--default-tenant` is configured
@@ -183,7 +183,7 @@ Centralized application configuration:
 
 - **Model loading** - Attention mechanism, offline mode, low CPU memory usage
 - **Folder paths** - Configurable directories for samples, output, datasets, models
-- **Model downloads** - Download models directly to local storage
+- **Model downloads** - Download models directly to local storage, including SpeechBrain speaker-separation models for strict offline use
 - **Source separation catalog** - Refresh, filter, and pre-download audio-separator models into the configured models folder for offline Singing workflows
 - **Visible Tools** - Enable or disable any tool tab (restart to apply)
 
@@ -459,8 +459,10 @@ For remote multi-tenant deployments, route traffic through an auth/reverse-proxy
 1. Go to **Library Manager** -> **Samples** or **Processing Studio**
 2. Upload or record audio (3-10 seconds of clear speech)
 3. Trim, normalize, and denoise as needed
-4. Transcribe or manually enter the text
-5. Save to Samples with a name
+4. Optionally run **Separate Speakers** to auto-import anonymous speaker tracks into **Samples**
+5. Use **Expected Speakers = 2** for the 16 kHz model or **3** for the lower-fidelity 8 kHz model
+6. Transcribe or manually enter the text
+7. Save to Samples with a name
 
 ### Clone a Voice
 

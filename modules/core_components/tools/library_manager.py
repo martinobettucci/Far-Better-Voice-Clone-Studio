@@ -12,11 +12,14 @@ import soundfile as sf
 from gradio_filelister import FileLister
 
 from modules.core_components.ai_models.asr_manager import get_asr_manager
+from modules.core_components.ai_models import get_speaker_separation_manager
 from modules.core_components.constants import resolve_preferred_asr_engine_and_model
 from modules.core_components.constants import coerce_choice_value
 from modules.core_components.library_processing import (
     ProcessingPipelineConfig,
     ProcessingSourceContext,
+    build_speaker_separation_import_plan,
+    build_speaker_separation_sample_metadata,
     WordTimestampLike,
     build_routed_processing_context,
     clean_transcription_for_engine,
@@ -83,6 +86,14 @@ class LibraryManagerTool(Tool):
         if default_asr not in visible_asr_options:
             default_asr = visible_asr_options[0]
         show_lang = any(k in default_asr for k in ("Qwen3 ASR", "Whisper"))
+
+        default_expected_speakers = str(_user_config.get("speaker_separation_expected_speakers", "2"))
+        speaker_note = (
+            "3-speaker separation uses the upstream SpeechBrain 8 kHz model. "
+            "Imported samples are lower fidelity than the 2-speaker path."
+            if default_expected_speakers == "3"
+            else "Uses the 2-speaker SpeechBrain model at 16 kHz."
+        )
 
         with gr.TabItem("Library Manager", id="tab_library_manager") as library_tab:
             components["library_tab"] = library_tab
@@ -299,6 +310,23 @@ class LibraryManagerTool(Tool):
                             )
 
                             with gr.Group():
+                                gr.Markdown("### Speaker Separation")
+                                with gr.Row():
+                                    components["proc_expected_speakers"] = gr.Dropdown(
+                                        choices=["2", "3"],
+                                        value=default_expected_speakers,
+                                        label="Expected Speakers",
+                                    )
+                                    components["proc_separate_speakers_btn"] = gr.Button(
+                                        "Separate Speakers",
+                                        variant="secondary",
+                                        size="sm",
+                                    )
+                                components["proc_speaker_separation_note"] = gr.Markdown(
+                                    speaker_note
+                                )
+
+                            with gr.Group():
                                 gr.Markdown("### Save")
                                 components["proc_save_dataset_folder"] = gr.Dropdown(
                                     choices=["(Select Dataset)"] + get_dataset_folders(),
@@ -349,6 +377,7 @@ class LibraryManagerTool(Tool):
         audio_route_trigger = shared_state.get("audio_route_trigger")
 
         asr_manager = get_asr_manager()
+        speaker_separation_manager = get_speaker_separation_manager(user_config=_user_config)
 
         def _parse_modal_value(payload: str, prefix: str) -> tuple[str | None, str | None]:
             if not payload or not payload.startswith(prefix):
@@ -594,7 +623,12 @@ class LibraryManagerTool(Tool):
             text = clean_transcription_for_engine(engine, (result.get("text") or ""))
             return text, f"Transcribed with {engine}"
 
-        def _save_sample_meta(sample_dir: Path, sample_name: str, transcript: str):
+        def _save_sample_meta(
+            sample_dir: Path,
+            sample_name: str,
+            transcript: str,
+            extra_fields: dict | None = None,
+        ):
             meta_path = sample_dir / f"{sample_name}.json"
             existing = {}
             if meta_path.exists():
@@ -608,7 +642,22 @@ class LibraryManagerTool(Tool):
             data["Type"] = data.get("Type", "Sample")
             data["Text"] = (transcript or "").strip()
             data["text"] = data["Text"]
+            if extra_fields:
+                data.update(extra_fields)
+                data["Name"] = sample_name
+                data["name"] = sample_name
+                data["Type"] = "Sample"
+                data["Text"] = (transcript or "").strip()
+                data["text"] = data["Text"]
             meta_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        def _speaker_separation_note(expected_speakers):
+            if str(expected_speakers) == "3":
+                return (
+                    "3-speaker separation uses the upstream SpeechBrain 8 kHz model. "
+                    "Imported samples are lower fidelity than the 2-speaker path."
+                )
+            return "Uses the 2-speaker SpeechBrain model at 16 kHz."
 
         def _save_sample_from_processing(
             audio_path: str,
@@ -716,6 +765,65 @@ class LibraryManagerTool(Tool):
             (dst_wav.with_suffix(".txt")).write_text((transcript or "").strip(), encoding="utf-8")
             mode_label = "Replace existing" if save_mode == "replace" else "Save as new"
             return f"Saved to Dataset ({mode_label}): {dataset_folder}/{final_name}.wav"
+
+        def _import_separated_tracks_to_samples(
+            separated_tracks,
+            *,
+            base_name: str,
+            source_identifier: str,
+            expected_speakers: int,
+            request: gr.Request,
+        ):
+            tracks = list(separated_tracks or [])
+            if not tracks:
+                return [], "Speaker separation did not return any tracks."
+
+            paths = get_tenant_paths(request=request, strict=True)
+            sample_dir = paths.samples_dir
+            sample_dir.mkdir(parents=True, exist_ok=True)
+
+            plans = build_speaker_separation_import_plan(
+                base_name,
+                tracks,
+                source_identifier=source_identifier,
+                expected_speakers=int(expected_speakers),
+            )
+            ok, msg = tenant_service.validate_generated_sizes(
+                paths,
+                [plan.estimated_size_bytes for plan in plans],
+                label="Speaker separation import",
+            )
+            if not ok:
+                return [], msg
+
+            created_names: list[str] = []
+            for plan, track in zip(plans, tracks):
+                desired = sample_dir / f"{plan.sample_name}.wav"
+                dst_wav = desired if not desired.exists() else collision_safe_path(sample_dir, f"{plan.sample_name}.wav")
+                final_name = dst_wav.stem
+
+                audio_data = np.asarray(getattr(track, "audio_data", []), dtype=np.float32).reshape(-1)
+                audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=0.0, neginf=0.0)
+                audio_data = np.clip(audio_data, -1.0, 1.0)
+                sample_rate = int(getattr(track, "sample_rate", plan.sample_rate) or plan.sample_rate or 0)
+                if sample_rate <= 0:
+                    return created_names, f"Invalid sample rate for separated speaker {plan.speaker_index}"
+
+                sf.write(str(dst_wav), audio_data, sample_rate, subtype="PCM_16")
+                extra_fields = build_speaker_separation_sample_metadata(
+                    final_name,
+                    source_identifier=source_identifier,
+                    expected_speakers=int(expected_speakers),
+                    speaker_index=plan.speaker_index,
+                )
+                _save_sample_meta(sample_dir, final_name, "", extra_fields=extra_fields)
+                _clear_sample_cache(final_name, request=request)
+                created_names.append(final_name)
+
+            return created_names, (
+                f"Imported {len(created_names)} separated speaker samples into Samples: "
+                + ", ".join(f"{name}.wav" for name in created_names)
+            )
 
         def _auto_split_to_dataset(
             audio_path: str,
@@ -1061,6 +1169,66 @@ class LibraryManagerTool(Tool):
                 return _run_transcribe(audio, model, lang)
             except MemoryAdmissionError as exc:
                 return f"⚠ Memory safety guard rejected request: {str(exc)}", "Error"
+
+        def _on_proc_separate_speakers_click(
+            audio,
+            expected_speakers,
+            default_name,
+            source_identifier,
+            request: gr.Request,
+        ):
+            def _run_impl():
+                audio_path = str(audio or "").strip()
+                if not audio_path:
+                    msg = "Load or generate audio in Processing Studio first"
+                    return gr.update(), gr.update(), gr.update(), msg, msg, msg
+                if not Path(audio_path).exists():
+                    msg = f"Processing audio was not found: {audio_path}"
+                    return gr.update(), gr.update(), gr.update(), msg, msg, msg
+
+                try:
+                    speaker_count = int(expected_speakers)
+                except Exception:
+                    msg = f"Invalid expected speaker count: {expected_speakers}"
+                    return gr.update(), gr.update(), gr.update(), msg, msg, msg
+
+                base_name = _clean_name(default_name) or _default_name_from_path(audio_path) or "separated_sample"
+                source_label = str(source_identifier or Path(audio_path).name).strip() or Path(audio_path).name
+
+                separated_tracks = speaker_separation_manager.separate_file(audio_path, speaker_count)
+                created_names, status = _import_separated_tracks_to_samples(
+                    separated_tracks,
+                    base_name=base_name,
+                    source_identifier=source_label,
+                    expected_speakers=speaker_count,
+                    request=request,
+                )
+                if not created_names:
+                    return gr.update(), gr.update(), gr.update(), status, status, status
+
+                return (
+                    gr.update(selected="library_samples"),
+                    get_sample_choices(request=request, strict=True),
+                    _usage_banner(request),
+                    status,
+                    status,
+                    status,
+                )
+
+            try:
+                if run_heavy_job:
+                    return run_heavy_job(
+                        "library_manager_speaker_separation",
+                        _run_impl,
+                        request=request,
+                    )
+                return _run_impl()
+            except MemoryAdmissionError as exc:
+                msg = f"⚠ Memory safety guard rejected request: {str(exc)}"
+                return gr.update(), gr.update(), gr.update(), msg, msg, msg
+            except Exception as exc:
+                msg = f"Speaker separation failed: {str(exc)}"
+                return gr.update(), gr.update(), gr.update(), msg, msg, msg
 
         def _on_upload_samples(upload_files, request: gr.Request):
             paths = get_tenant_paths(request=request, strict=True)
@@ -1863,6 +2031,33 @@ class LibraryManagerTool(Tool):
             _on_proc_transcribe_click,
             inputs=[components["proc_audio_editor"], components["proc_transcribe_model"], components["proc_language"]],
             outputs=[components["proc_transcript"], components["proc_status"]],
+        )
+
+        components["proc_expected_speakers"].change(
+            lambda value: (
+                save_preference("speaker_separation_expected_speakers", str(value)),
+                _speaker_separation_note(value),
+            )[1],
+            inputs=[components["proc_expected_speakers"]],
+            outputs=[components["proc_speaker_separation_note"]],
+        )
+
+        components["proc_separate_speakers_btn"].click(
+            _on_proc_separate_speakers_click,
+            inputs=[
+                components["proc_audio_editor"],
+                components["proc_expected_speakers"],
+                components["lm_default_name"],
+                components["proc_source_identifier"],
+            ],
+            outputs=[
+                components["library_sections"],
+                components["samples_lister"],
+                components["library_usage_md"],
+                components["proc_status"],
+                components["library_status"],
+                components["sample_action_status"],
+            ],
         )
 
         def _on_asr_change(model):

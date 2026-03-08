@@ -42,6 +42,12 @@ from .source_separation_manager import (
     get_source_separation_manager,
     synthesize_backing_track,
 )
+from .speaker_separation_manager import (
+    SpeakerSeparationManager,
+    SpeakerSeparationModel,
+    SeparatedTrack,
+    get_speaker_separation_manager,
+)
 
 __all__ = [
     # Utilities
@@ -77,4 +83,10 @@ __all__ = [
     "SourceSeparationModel",
     "get_source_separation_manager",
     "synthesize_backing_track",
+
+    # Speaker Separation
+    "SpeakerSeparationManager",
+    "SpeakerSeparationModel",
+    "SeparatedTrack",
+    "get_speaker_separation_manager",
 ]

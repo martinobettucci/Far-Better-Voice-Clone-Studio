@@ -12,6 +12,7 @@ sox
 einops
 huggingface_hub
 onnxruntime
+speechbrain
 
 # Web UI and utilities
 gradio

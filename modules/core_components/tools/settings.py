@@ -16,9 +16,11 @@ if __name__ == "__main__":
 
 import gradio as gr
 from pathlib import Path
+import traceback
 
 import modules.core_components.prompt_hub as prompt_hub
 from modules.core_components.ai_models import get_source_separation_manager
+from modules.core_components.ai_models import get_speaker_separation_manager
 from modules.core_components.ai_models.source_separation_manager import DEFAULT_SOURCE_SEPARATION_MODEL_FILENAMES
 from modules.core_components.tool_base import Tool, ToolConfig
 from modules.core_components.constants import (
@@ -89,6 +91,17 @@ class SettingsTool(Tool):
                 label = f"Source Separation - {model.display_name} [{model.model_filename}]"
                 source_sep_download_choices.append(label)
                 source_sep_download_map[label] = f"source-separation://{model.model_filename}"
+
+        speaker_separation_manager = get_speaker_separation_manager(
+            user_config=_user_config,
+            models_dir=configured_models_dir,
+        )
+        speaker_sep_models = speaker_separation_manager.list_models()
+        speaker_sep_download_choices = ["--- Speaker Separation ---"]
+        speaker_sep_download_map = {}
+        for model in speaker_sep_models:
+            speaker_sep_download_choices.append(model.display_name)
+            speaker_sep_download_map[model.display_name] = f"speaker-separation://{model.expected_speakers}"
 
         with gr.TabItem("⚙️"):
             gr.Markdown("# ⚙️ Settings")
@@ -197,6 +210,7 @@ class SettingsTool(Tool):
                             "Source Separation - Recommended Defaults",
                         ]
                         model_download_choices.extend(source_sep_download_choices)
+                        model_download_choices.extend(speaker_sep_download_choices)
                         model_download_choices.extend(
                             [
                                 "--- Sound Effects (MMAudio) ---",
@@ -213,7 +227,8 @@ class SettingsTool(Tool):
                             info=(
                                 "Needed for strict offline mode. "
                                 "Download all required dependencies here. "
-                                "Source-separation models are listed here too, and 'Download them all' includes them."
+                                "Source-separation and speaker-separation models are listed here too, "
+                                "and 'Download them all' includes them."
                             ),
                             choices=model_download_choices,
                             value="Qwen3-TTS-12Hz-0.6B-Base",
@@ -229,7 +244,8 @@ class SettingsTool(Tool):
                         components["download_btn"] = gr.Button("Download Model", scale=1)
 
                         gr.Markdown(
-                            "Source-separation models auto-download on first use unless Offline Mode is enabled."
+                            "Source-separation and speaker-separation models auto-download on first use unless "
+                            "Offline Mode is enabled."
                         )
 
                         # Mapping from display names to HuggingFace model IDs
@@ -259,6 +275,7 @@ class SettingsTool(Tool):
                             "MMAudio-BigVGAN-v2-44k": "nvidia/bigvgan_v2_44khz_128band_512x",
                         }
                         model_id_map.update(source_sep_download_map)
+                        model_id_map.update(speaker_sep_download_map)
                         components["MODEL_ID_MAP"] = model_id_map
 
                 with gr.Row():
@@ -441,6 +458,12 @@ class SettingsTool(Tool):
             if not models_dir.is_absolute():
                 models_dir = project_root / models_dir
             return get_source_separation_manager(user_config=_user_config, models_dir=models_dir)
+
+        def _get_speaker_separation_manager():
+            models_dir = Path(_user_config.get("models_folder", "models"))
+            if not models_dir.is_absolute():
+                models_dir = project_root / models_dir
+            return get_speaker_separation_manager(user_config=_user_config, models_dir=models_dir)
 
         # Lazy import to avoid circular dependency
         from modules.core_components.tools import save_config
@@ -806,6 +829,11 @@ class SettingsTool(Tool):
                 try:
                     models = manager.list_models(refresh=False)
                 except Exception as exc:
+                    print(
+                        f"[Source Separation Download] Failed to load recommended model list: {exc}\n"
+                        f"{traceback.format_exc()}",
+                        flush=True,
+                    )
                     return False, f"❌ Failed to load source-separation models: {str(exc)}"
                 default_models = manager.get_default_models(models=models)
                 if not default_models:
@@ -826,7 +854,25 @@ class SettingsTool(Tool):
                 model_filename = model_id.split("source-separation://", 1)[1].strip()
                 manager = _get_source_separation_manager()
                 try:
+                    print(
+                        f"[Source Separation Download] Download request for model={model_filename}",
+                        flush=True,
+                    )
                     info = manager.download_model(model_filename)
+                    return True, f"✓ Downloaded {info['display_name']} to {info['model_dir']}"
+                except Exception as exc:
+                    print(
+                        f"[Source Separation Download] Download failed for model={model_filename}: {exc}\n"
+                        f"{traceback.format_exc()}",
+                        flush=True,
+                    )
+                    return False, f"❌ {str(exc)}"
+
+            if model_id.startswith("speaker-separation://"):
+                expected_speakers = model_id.split("speaker-separation://", 1)[1].strip()
+                manager = _get_speaker_separation_manager()
+                try:
+                    info = manager.download_model(int(expected_speakers))
                     return True, f"✓ Downloaded {info['display_name']} to {info['model_dir']}"
                 except Exception as exc:
                     return False, f"❌ {str(exc)}"
@@ -849,10 +895,20 @@ class SettingsTool(Tool):
                 if progress is not None:
                     progress((index - 1) / total, desc=f"Downloading source-separation model {index}/{total}...")
                 try:
+                    print(
+                        f"[Source Separation Download] Bulk download {index}/{total}: "
+                        f"{model.display_name} ({model.model_filename})",
+                        flush=True,
+                    )
                     info = manager.download_model(model.model_filename, progress_callback=None)
                     ok_count += 1
                     lines.append(f"Source Separation / {model.display_name}: ✓ {info['model_dir']}")
                 except Exception as exc:
+                    print(
+                        f"[Source Separation Download] Bulk download failed for "
+                        f"{model.model_filename}: {exc}\n{traceback.format_exc()}",
+                        flush=True,
+                    )
                     fail_count += 1
                     lines.append(f"Source Separation / {model.display_name}: ❌ {str(exc)}")
 

@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
+
+from .tenant_storage import sanitize_filename
+
 
 LANGUAGE_CODE_MAP = {
     "English": "en",
@@ -80,6 +84,17 @@ class ProcessingPipelineConfig:
     enable_mono: bool = False
 
 
+@dataclass(frozen=True)
+class SpeakerSeparatedSampleImport:
+    """Planned sample import for one separated speaker track."""
+
+    sample_name: str
+    speaker_index: int
+    sample_rate: int
+    estimated_size_bytes: int
+    metadata: dict
+
+
 def build_routed_processing_context(audio_path: str) -> ProcessingSourceContext:
     """Build processing context for routed/generated audio."""
     resolved_path = str(audio_path or "").strip()
@@ -100,6 +115,69 @@ def resolve_processing_save_destination(action_kind: str, source_kind: str) -> s
     if source_kind == "dataset":
         return "dataset" if action_kind == "primary" else "sample"
     return "sample" if action_kind == "primary" else "dataset"
+
+
+def build_speaker_separation_sample_name(base_name: str, speaker_index: int) -> str:
+    """Build deterministic sample names for imported speaker tracks."""
+    safe_base = sanitize_filename(base_name or "sample", keep_extension=False)
+    return f"{safe_base}_speaker_{int(speaker_index)}"
+
+
+def build_speaker_separation_sample_metadata(
+    sample_name: str,
+    *,
+    source_identifier: str,
+    expected_speakers: int,
+    speaker_index: int,
+    backend: str = "SpeechBrain SepFormer",
+) -> dict:
+    """Build metadata for an imported separated speaker sample."""
+    final_name = sanitize_filename(sample_name or "sample", keep_extension=False)
+    return {
+        "Name": final_name,
+        "name": final_name,
+        "Type": "Sample",
+        "Text": "",
+        "text": "",
+        "Source": str(source_identifier or "").strip(),
+        "SeparationBackend": str(backend or "SpeechBrain SepFormer").strip(),
+        "ExpectedSpeakers": int(expected_speakers),
+        "SpeakerIndex": int(speaker_index),
+    }
+
+
+def build_speaker_separation_import_plan(
+    base_name: str,
+    separated_tracks: Iterable[object],
+    *,
+    source_identifier: str,
+    expected_speakers: int,
+    backend: str = "SpeechBrain SepFormer",
+) -> list[SpeakerSeparatedSampleImport]:
+    """Build deterministic sample-import plans for separated speaker tracks."""
+    plans: list[SpeakerSeparatedSampleImport] = []
+    for default_index, track in enumerate(separated_tracks or [], start=1):
+        speaker_index = int(getattr(track, "speaker_index", default_index))
+        sample_rate = int(getattr(track, "sample_rate", 0) or 0)
+        audio_data = np.asarray(getattr(track, "audio_data", []), dtype=np.float32).reshape(-1)
+        sample_name = build_speaker_separation_sample_name(base_name, speaker_index)
+        metadata = build_speaker_separation_sample_metadata(
+            sample_name,
+            source_identifier=source_identifier,
+            expected_speakers=expected_speakers,
+            speaker_index=speaker_index,
+            backend=backend,
+        )
+        plans.append(
+            SpeakerSeparatedSampleImport(
+                sample_name=sample_name,
+                speaker_index=speaker_index,
+                sample_rate=sample_rate,
+                estimated_size_bytes=estimate_pcm16_wav_bytes(len(audio_data), channels=1),
+                metadata=metadata,
+            )
+        )
+    return plans
 
 
 def split_into_segments(
