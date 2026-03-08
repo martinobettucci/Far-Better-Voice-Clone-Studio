@@ -1,5 +1,6 @@
 from modules.core_components.tools.voice_changer import (
     build_voice_changer_metadata,
+    materialize_voice_changer_source_audio,
     resolve_voice_changer_conversion_settings,
 )
 
@@ -59,3 +60,16 @@ def test_voice_changer_metadata_mentions_profile_and_effective_parameters():
     assert "VC Diffusion Steps: 25" in metadata
     assert "Chunking: 6.00s chunks / 1.50s overlap" in metadata
     assert "Profile Note: Singing profile applied default diffusion and chunking tuned for sung input." in metadata
+
+
+def test_materialize_voice_changer_source_audio_accepts_existing_filepath(tmp_path):
+    source_path = tmp_path / "source.wav"
+    source_path.write_bytes(b"fake")
+
+    resolved_path, cleanup_path = materialize_voice_changer_source_audio(
+        str(source_path),
+        get_tenant_paths=lambda **_kwargs: None,
+    )
+
+    assert resolved_path == str(source_path)
+    assert cleanup_path is None

@@ -31,6 +31,7 @@ def test_audio_route_available_targets_only_include_instantiated_tools():
         "Voice Clone": {},
         "Library Manager": {},
         "Singing Enhancements": {},
+        "Voice Changer": {},
     }
 
     targets = audio_route_get_available_targets(tool_components)
@@ -39,12 +40,14 @@ def test_audio_route_available_targets_only_include_instantiated_tools():
         ("Library Manager > Processing Studio", "library_manager.processing"),
         ("Singing Enhancements > Lead Vocal", "singing_enhancements.source"),
         ("Singing Enhancements > Backing Track", "singing_enhancements.backing"),
+        ("Voice Changer > Source Audio", "voice_changer.source"),
     ]
 
 
 def test_audio_route_target_tab_mapping():
     assert audio_route_get_target_tab_id("library_manager.processing") == "tab_library_manager"
     assert audio_route_get_target_tab_id("singing_enhancements.source") == "tab_singing_enhancements"
+    assert audio_route_get_target_tab_id("voice_changer.source") == "tab_voice_changer"
     assert audio_route_get_target_tab_id("missing.target") == ""
 
 

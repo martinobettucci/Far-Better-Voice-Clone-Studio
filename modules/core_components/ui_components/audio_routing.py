@@ -38,6 +38,14 @@ AUDIO_ROUTE_TARGETS = OrderedDict(
                 "tab_id": "tab_singing_enhancements",
             },
         ),
+        (
+            "voice_changer.source",
+            {
+                "label": "Voice Changer > Source Audio",
+                "tool_name": "Voice Changer",
+                "tab_id": "tab_voice_changer",
+            },
+        ),
     ]
 )
 

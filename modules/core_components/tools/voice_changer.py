@@ -39,6 +39,7 @@ from modules.core_components.runtime import MemoryAdmissionError
 from modules.core_components.ui_components.audio_routing import (
     create_audio_route_controls,
     wire_audio_route_dropdown_refresh,
+    wire_audio_route_listener,
     wire_audio_route_source,
 )
 from gradio_filelister import FileLister
@@ -145,6 +146,34 @@ def build_voice_changer_status(target_name: str, settings: VoiceChangerConversio
     return prefix_non_stream_status(f"Voice changed to match '{target_name}'.")
 
 
+def materialize_voice_changer_source_audio(source_audio, *, get_tenant_paths, request: gr.Request = None) -> tuple[str | None, Path | None]:
+    """Normalize Voice Changer input into a filepath."""
+    if source_audio is None:
+        return None, None
+
+    if isinstance(source_audio, str):
+        source_path = Path(source_audio)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source audio file not found: {source_audio}")
+        return str(source_path), None
+
+    if isinstance(source_audio, (tuple, list)) and len(source_audio) == 2:
+        src_sr, src_data = source_audio
+        import numpy as np
+
+        tenant_paths = get_tenant_paths(request=request, strict=True)
+        temp_dir = tenant_paths.temp_dir
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = temp_dir / "_vc_source_input.wav"
+        src_wave = src_data
+        if getattr(src_wave, "dtype", None) in (np.int16, np.int32):
+            src_wave = src_wave.astype(np.float32) / np.iinfo(src_wave.dtype).max
+        sf.write(str(temp_path), src_wave, src_sr)
+        return str(temp_path), temp_path
+
+    raise TypeError(f"Unsupported source audio value for Voice Changer: {type(source_audio).__name__}")
+
+
 class VoiceChangerTool(Tool):
     """Voice Changer tool implementation."""
 
@@ -177,7 +206,7 @@ class VoiceChangerTool(Tool):
         )
         initial_audio_route_choices = shared_state.get("audio_route_get_initial_targets", lambda: [])()
 
-        with gr.TabItem("Voice Changer") as voice_changer_tab:
+        with gr.TabItem("Voice Changer", id="tab_voice_changer") as voice_changer_tab:
             components['voice_changer_tab'] = voice_changer_tab
             gr.Markdown("Change the voice in any audio to match a target voice sample. <small>(Uses Chatterbox VC — no text input needed)</small>")
             with gr.Row():
@@ -224,7 +253,7 @@ class VoiceChangerTool(Tool):
 
                     components['source_audio'] = gr.Audio(
                         label="Upload or record the audio whose voice you want to change",
-                        type="numpy",
+                        type="filepath",
                         sources=["upload", "microphone"],
                     )
                     components['conversion_profile'] = gr.Dropdown(
@@ -321,6 +350,7 @@ class VoiceChangerTool(Tool):
         run_heavy_job = shared_state.get('run_heavy_job')
         show_input_modal_js = shared_state['show_input_modal_js']
         save_preference = shared_state['save_preference']
+        audio_route_trigger = shared_state.get("audio_route_trigger")
         input_trigger = shared_state['input_trigger']
         normalize_audio = shared_state['normalize_audio']
         remove_silences = shared_state['remove_silences']
@@ -352,9 +382,6 @@ class VoiceChangerTool(Tool):
             if source_audio is None:
                 return None, gr.update(interactive=False), None, "", "", "Please upload or record source audio."
 
-            # source_audio is (sample_rate, numpy_array) from gr.Audio(type="numpy")
-            src_sr, src_data = source_audio
-
             target_name = get_selected_sample_name(target_lister_value)
             if not target_name:
                 return None, gr.update(interactive=False), None, "", "", "Please select a target voice sample."
@@ -378,18 +405,14 @@ class VoiceChangerTool(Tool):
                     chunk_seconds=settings.chunk_seconds,
                     overlap_seconds=settings.overlap_seconds,
                 )
-
-                # Save source numpy audio to a temp WAV (Chatterbox VC expects a file path)
-                import numpy as np
                 tenant_paths = get_tenant_paths(request=request, strict=True)
                 temp_dir = tenant_paths.temp_dir
                 temp_dir.mkdir(parents=True, exist_ok=True)
-                src_temp = str(temp_dir / "_vc_source_input.wav")
-                # Gradio may return int16/int32 — convert to float for soundfile
-                src_wave = src_data
-                if src_wave.dtype in (np.int16, np.int32):
-                    src_wave = src_wave.astype(np.float32) / np.iinfo(src_wave.dtype).max
-                sf.write(src_temp, src_wave, src_sr)
+                src_temp, cleanup_path = materialize_voice_changer_source_audio(
+                    source_audio,
+                    get_tenant_paths=get_tenant_paths,
+                    request=request,
+                )
                 try:
                     progress(0.4, desc="Converting voice...")
                     audio_data, sr = tts_manager.generate_voice_convert_chatterbox(
@@ -441,7 +464,8 @@ class VoiceChangerTool(Tool):
                     )
                 finally:
                     try:
-                        Path(src_temp).unlink(missing_ok=True)
+                        if cleanup_path is not None:
+                            cleanup_path.unlink(missing_ok=True)
                     except Exception:
                         pass
 
@@ -559,6 +583,14 @@ class VoiceChangerTool(Tool):
             lambda: get_sample_choices(),
             outputs=[components['target_lister']]
         )
+        if audio_route_trigger is not None:
+            wire_audio_route_listener(
+                audio_route_trigger=audio_route_trigger,
+                target_components={
+                    "voice_changer.source": components["source_audio"],
+                },
+                status_component=components["convert_status"],
+            )
         wire_audio_route_dropdown_refresh(
             components['voice_changer_tab'],
             components['route_target'],

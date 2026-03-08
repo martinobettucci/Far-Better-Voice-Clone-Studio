@@ -70,6 +70,7 @@ SOURCE_SEPARATION_GOAL_CHOICES = (
     "Detailed Stems",
     "All Models",
 )
+SOURCE_SEPARATION_VOCALS_DESTINATIONS = ("Studio", "Voice Changer")
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -324,6 +325,55 @@ def build_source_separation_studio_route_update(audio_path: str | None, label: s
         gr.update(value=audio_path),
         gr.update(selected="singing_studio"),
         f"Loaded {label.lower()} into Studio.",
+    )
+
+
+def build_source_separation_vocals_route_update(
+    *,
+    audio_path: str | None,
+    destination: str,
+    audio_route_build,
+    main_tabs_component_available: bool,
+) -> tuple[dict, str, dict, str, dict]:
+    """Route separated vocals into Studio or Voice Changer."""
+    if not audio_path:
+        return (
+            gr.update(),
+            "",
+            gr.update(),
+            "No vocals stem is available.",
+            gr.update(),
+        )
+
+    normalized_destination = str(destination or "Studio").strip()
+    if normalized_destination == "Voice Changer":
+        if audio_route_build is None:
+            return (
+                gr.update(),
+                "",
+                gr.update(),
+                "Voice Changer routing is unavailable in this session.",
+                gr.update(),
+            )
+        payload = audio_route_build(
+            "voice_changer.source",
+            audio_path,
+            source_label="Singing Enhancements: Separated Vocals",
+        )
+        return (
+            gr.update(),
+            payload,
+            gr.update(),
+            "Loaded vocals into Voice Changer.",
+            gr.update(selected="tab_voice_changer") if main_tabs_component_available else gr.update(),
+        )
+
+    return (
+        gr.update(value=audio_path),
+        "",
+        gr.update(selected="singing_studio"),
+        "Loaded vocals into Studio.",
+        gr.update(),
     )
 
 
@@ -605,10 +655,19 @@ class SingingEnhancementsTool(Tool):
                                 interactive=True,
                             )
                             with gr.Row():
+                                components["sep_vocals_destination"] = gr.Dropdown(
+                                    label="Use Vocals In",
+                                    choices=list(SOURCE_SEPARATION_VOCALS_DESTINATIONS),
+                                    value="Studio",
+                                    interactive=True,
+                                    allow_custom_value=False,
+                                    scale=2,
+                                )
                                 components["use_sep_vocals_btn"] = gr.Button(
-                                    "Use Vocals in Studio",
+                                    "Use Vocals",
                                     variant="secondary",
                                     interactive=False,
+                                    scale=1,
                                 )
                                 components["save_sep_vocals_btn"] = gr.Button(
                                     "Save Vocals",
@@ -688,6 +747,8 @@ class SingingEnhancementsTool(Tool):
         play_completion_beep = shared_state.get("play_completion_beep")
         run_heavy_job = shared_state.get("run_heavy_job")
         audio_route_trigger = shared_state.get("audio_route_trigger")
+        audio_route_build = shared_state.get("audio_route_build_payload")
+        main_tabs_component = shared_state.get("main_tabs_component")
         source_separation_manager = _get_source_separation_manager_for_state(shared_state)
 
         def toggle_manual_controls(mode: str):
@@ -1118,11 +1179,53 @@ class SingingEnhancementsTool(Tool):
             queue=False,
         )
 
-        components["use_sep_vocals_btn"].click(
-            lambda audio_path: build_source_separation_studio_route_update(audio_path, "Vocals"),
-            inputs=[components["sep_vocals_audio"]],
-            outputs=[components["source_audio"], components["singing_sections"], components["sep_status"]],
-        )
+        if audio_route_trigger is not None and main_tabs_component is not None:
+            components["use_sep_vocals_btn"].click(
+                lambda audio_path, destination: build_source_separation_vocals_route_update(
+                    audio_path=audio_path,
+                    destination=destination,
+                    audio_route_build=audio_route_build,
+                    main_tabs_component_available=True,
+                ),
+                inputs=[components["sep_vocals_audio"], components["sep_vocals_destination"]],
+                outputs=[
+                    components["source_audio"],
+                    audio_route_trigger,
+                    components["singing_sections"],
+                    components["sep_status"],
+                    main_tabs_component,
+                ],
+            )
+        elif audio_route_trigger is not None:
+            components["use_sep_vocals_btn"].click(
+                lambda audio_path, destination: build_source_separation_vocals_route_update(
+                    audio_path=audio_path,
+                    destination=destination,
+                    audio_route_build=audio_route_build,
+                    main_tabs_component_available=False,
+                )[:4],
+                inputs=[components["sep_vocals_audio"], components["sep_vocals_destination"]],
+                outputs=[
+                    components["source_audio"],
+                    audio_route_trigger,
+                    components["singing_sections"],
+                    components["sep_status"],
+                ],
+            )
+        else:
+            components["use_sep_vocals_btn"].click(
+                lambda audio_path, destination: (
+                    gr.update(value=audio_path) if destination != "Voice Changer" and audio_path else gr.update(),
+                    gr.update(selected="singing_studio") if destination != "Voice Changer" and audio_path else gr.update(),
+                    (
+                        "Loaded vocals into Studio."
+                        if destination != "Voice Changer" and audio_path
+                        else "Voice Changer routing is unavailable in this session."
+                    ),
+                ),
+                inputs=[components["sep_vocals_audio"], components["sep_vocals_destination"]],
+                outputs=[components["source_audio"], components["singing_sections"], components["sep_status"]],
+            )
         components["use_sep_backing_btn"].click(
             lambda audio_path: build_source_separation_studio_route_update(audio_path, "Backing"),
             inputs=[components["sep_backing_audio"]],

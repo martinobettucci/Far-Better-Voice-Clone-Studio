@@ -48,6 +48,7 @@ def test_singing_enhancements_tool_builds_with_exported_waveform_widget():
     assert "singing_sections" in components
     assert "sep_goal_select" in components
     assert "sep_model_select" in components
+    assert "sep_vocals_destination" in components
     assert "sep_source_audio" in components
     assert "sep_vocals_audio" in components
 
